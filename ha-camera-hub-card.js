@@ -1,6 +1,6 @@
-const VERSION = "0.4.2";
+const VERSION = "0.4.3";
 
-const EVENTS_REFRESH_MS = 2 * 60 * 1000;
+const EVENTS_REFRESH_MS = 30 * 1000;
 const SYSTEM_TICK_MS = 30 * 1000;
 const EVENTS_WINDOW_HOURS = 36;
 
@@ -423,6 +423,24 @@ class HACameraHubCard extends HTMLElement {
     this._renderMediaDialog();
   }
 
+  async _mediaRefresh() {
+    if (!this._media || this._media.playing) return;
+    const top = this._media.stack[this._media.stack.length - 1];
+    const contentId = top?.node?.media_content_id;
+    if (!contentId) return;
+    this._media.loading = true;
+    this._media.notice = null;
+    this._media.error = null;
+    this._renderMediaDialog();
+    try {
+      top.node = await this._browseMedia(contentId);
+    } catch (error) {
+      this._media.error = "Kunne ikke opdatere hændelser.";
+    }
+    this._media.loading = false;
+    this._renderMediaDialog();
+  }
+
   async _mediaPlay(child) {
     if (!this._media) return;
     this._media.loading = true;
@@ -448,10 +466,12 @@ class HACameraHubCard extends HTMLElement {
     const body = this.shadowRoot.querySelector("[data-media-body]");
     const titleEl = this.shadowRoot.querySelector("[data-media-title]");
     const backBtn = this.shadowRoot.querySelector("[data-media-back]");
+    const refreshBtn = this.shadowRoot.querySelector("[data-media-refresh]");
     if (!dialog || !body || !titleEl || !backBtn || !this._media) return;
     const top = this._media.stack[this._media.stack.length - 1];
     titleEl.textContent = this._media.playing ? this._media.playing.title : top?.title || "Hændelser";
     backBtn.hidden = this._media.stack.length <= 1 && !this._media.playing;
+    if (refreshBtn) refreshBtn.hidden = !!this._media.playing;
 
     if (this._media.loading) {
       body.innerHTML = `<div class="media-loading">Indlæser…</div>`;
@@ -662,7 +682,7 @@ class HACameraHubCard extends HTMLElement {
       .sheet-head b{flex:1;font-size:14px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
       .sheet-head button{display:grid;place-items:center;flex:0 0 auto;width:32px;height:32px;border:0;border-radius:50%;background:color-mix(in srgb,var(--card-background-color) 85%,var(--primary-text-color) 15%);color:var(--primary-text-color);cursor:pointer}
       .sheet-head button ha-icon{--mdc-icon-size:18px}
-      .sheet-head [data-media-back][hidden]{visibility:hidden}
+      .sheet-head [data-media-back][hidden],.sheet-head [data-media-refresh][hidden]{visibility:hidden;display:grid}
       .media-body{padding:12px 14px 16px;overflow-y:auto;max-height:calc(82vh - 58px)}
       .media-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}
       .media-item{border:1px solid var(--edge);border-radius:12px;overflow:hidden;cursor:pointer;background:var(--card-background-color);text-align:left;padding:0;color:inherit;font:inherit}
@@ -700,6 +720,7 @@ class HACameraHubCard extends HTMLElement {
       <div class="sheet-head">
         <button data-media-back hidden title="Tilbage"><ha-icon icon="mdi:arrow-left"></ha-icon></button>
         <b data-media-title>Hændelser</b>
+        <button data-media-refresh title="Opdater"><ha-icon icon="mdi:refresh"></ha-icon></button>
         <button data-media-close aria-label="Luk"><ha-icon icon="mdi:close"></ha-icon></button>
       </div>
       <div class="media-body" data-media-body></div>
@@ -728,6 +749,7 @@ class HACameraHubCard extends HTMLElement {
     const mediaDialog = this.shadowRoot.querySelector("[data-media-dialog]");
     this.shadowRoot.querySelector("[data-media-close]")?.addEventListener("click", () => this._closeMediaDialog());
     this.shadowRoot.querySelector("[data-media-back]")?.addEventListener("click", () => this._mediaBack());
+    this.shadowRoot.querySelector("[data-media-refresh]")?.addEventListener("click", () => this._mediaRefresh());
     mediaDialog?.addEventListener("click", (event) => {
       if (event.target === mediaDialog) this._closeMediaDialog();
     });
