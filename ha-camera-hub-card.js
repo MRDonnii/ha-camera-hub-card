@@ -1,4 +1,4 @@
-const VERSION = "0.5.4";
+const VERSION = "0.5.5";
 
 const EVENTS_REFRESH_MS = 30 * 1000;
 const SYSTEM_TICK_MS = 30 * 1000;
@@ -888,9 +888,9 @@ class HACameraHubCard extends HTMLElement {
       ["system", "System", "mdi:server-network"],
     ];
     this.shadowRoot.innerHTML = `<style>
-      :host{display:block;--good:var(--dashboard-success, var(--success-color, #20e3a2));--warn:var(--dashboard-warning, var(--warning-color, #f59e0b));--danger:var(--dashboard-danger, var(--error-color, #ef4444));--accent:var(--dashboard-accent, var(--info-color, #38bdf8));--edge:var(--dashboard-border-neutral, var(--divider-color, rgba(127,145,165,.2)));--muted:var(--dashboard-icon-muted, var(--disabled-text-color, #64748b));--animal:#f97316;--object:#a855f7;--motion:#06b6d4}
+      :host{display:block;--good:var(--dashboard-success, var(--success-color, #20e3a2));--warn:var(--dashboard-warning, var(--warning-color, #f59e0b));--danger:var(--dashboard-danger, var(--error-color, #ef4444));--accent:var(--dashboard-accent, var(--info-color, #38bdf8));--edge:var(--dashboard-border-neutral, var(--divider-color, rgba(127,145,165,.2)));--muted:var(--dashboard-icon-muted, var(--disabled-text-color, #64748b));--animal:#f97316;--object:#a855f7;--motion:#06b6d4;--card-surface:var(--dashboard-card-bg,var(--ha-card-background,var(--card-background-color,#111820)));--card-solid:var(--card-background-color,#111820)}
       *{box-sizing:border-box}
-      ha-card{padding:16px;border-radius:22px;background:var(--card-background-color);border:1px solid var(--edge);color:var(--primary-text-color);box-shadow:var(--ha-card-box-shadow)}
+      ha-card{padding:16px;border-radius:22px;background:var(--card-surface);border:1px solid var(--edge);color:var(--primary-text-color);box-shadow:var(--ha-card-box-shadow)}
       .head{display:flex;align-items:center;gap:12px;margin-bottom:14px;padding:0 4px}
       .head ha-icon{--mdc-icon-size:24px;color:var(--accent)}
       .head strong{display:block;font-size:16px}
@@ -902,7 +902,7 @@ class HACameraHubCard extends HTMLElement {
       .panel[hidden]{display:none}
       .empty{padding:34px 16px;text-align:center;color:var(--secondary-text-color);font-size:12.5px}
       .live-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
-      .cam-tile{border:1px solid var(--edge);border-radius:14px;overflow:hidden;background:var(--card-background-color)}
+      .cam-tile{border:1px solid var(--edge);border-radius:14px;overflow:hidden;background:var(--card-surface)}
       .cam-tile.person{border-color:color-mix(in srgb,var(--danger) 55%,var(--edge))}
       .cam-tile.animal{border-color:color-mix(in srgb,var(--animal) 55%,var(--edge))}
       .cam-tile.vehicle{border-color:color-mix(in srgb,var(--accent) 55%,var(--edge))}
@@ -930,7 +930,7 @@ class HACameraHubCard extends HTMLElement {
       .filter-chip ha-icon{--mdc-icon-size:14px}
       .filter-chip.active{color:#fff;background:var(--accent);border-color:var(--accent)}
       .event-list{display:flex;flex-direction:column;gap:1px;border:1px solid var(--edge);border-radius:14px;overflow:hidden;max-height:520px;overflow-y:auto}
-      .event-row{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--card-background-color);cursor:pointer}
+      .event-row{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--card-surface);cursor:pointer}
       .event-row+.event-row{border-top:1px solid var(--edge)}
       .event-thumb{width:44px;height:44px;border-radius:11px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;overflow:hidden;background:color-mix(in srgb,var(--muted) 14%,transparent);color:var(--muted)}
       .event-thumb ha-icon{--mdc-icon-size:18px}
@@ -948,7 +948,7 @@ class HACameraHubCard extends HTMLElement {
       .event-open{flex:0 0 auto;width:32px;height:32px;border-radius:10px;border:1px solid var(--edge);background:transparent;color:var(--accent);cursor:pointer;display:flex;align-items:center;justify-content:center}
       .event-open ha-icon{--mdc-icon-size:16px}
       .row-list{display:flex;flex-direction:column;gap:1px;border:1px solid var(--edge);border-radius:14px;overflow:hidden}
-      .row{display:flex;align-items:center;gap:10px;padding:11px 13px;background:var(--card-background-color)}
+      .row{display:flex;align-items:center;gap:10px;padding:11px 13px;background:var(--card-surface)}
       .row+.row{border-top:1px solid var(--edge)}
       .row ha-icon{--mdc-icon-size:17px;color:var(--accent);flex:0 0 auto}
       .row.warn ha-icon{color:var(--danger)}
@@ -959,16 +959,16 @@ class HACameraHubCard extends HTMLElement {
       .protect-btn ha-icon{--mdc-icon-size:20px;color:var(--accent)}
       .protect-btn small{display:block;color:var(--secondary-text-color);font-size:11px;margin-top:2px}
       .protect-btn+.protect-btn{margin-top:8px}
-      dialog[data-media-dialog]{width:min(94vw,560px);max-height:82vh;margin:auto;border:1px solid var(--edge);border-radius:18px;padding:0;background:var(--card-background-color);color:var(--primary-text-color);box-shadow:0 18px 50px rgba(0,0,0,.35)}
+      dialog[data-media-dialog]{width:min(94vw,560px);max-height:82vh;margin:auto;border:1px solid var(--edge);border-radius:18px;padding:0;background:var(--card-surface);color:var(--primary-text-color);box-shadow:0 18px 50px rgba(0,0,0,.35)}
       dialog[data-media-dialog]::backdrop{background:rgba(0,0,0,.5);backdrop-filter:blur(2px)}
       .sheet-head{display:flex;align-items:center;gap:8px;padding:13px 14px;border-bottom:1px solid var(--edge)}
       .sheet-head b{flex:1;font-size:14px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-      .sheet-head button{display:grid;place-items:center;flex:0 0 auto;width:32px;height:32px;border:0;border-radius:50%;background:color-mix(in srgb,var(--card-background-color) 85%,var(--primary-text-color) 15%);color:var(--primary-text-color);cursor:pointer}
+      .sheet-head button{display:grid;place-items:center;flex:0 0 auto;width:32px;height:32px;border:0;border-radius:50%;background:color-mix(in srgb,var(--card-solid) 85%,var(--primary-text-color) 15%);color:var(--primary-text-color);cursor:pointer}
       .sheet-head button ha-icon{--mdc-icon-size:18px}
       .sheet-head [data-media-back][hidden],.sheet-head [data-media-refresh][hidden]{visibility:hidden;display:grid}
       .media-body{padding:12px 14px 16px;overflow-y:auto;max-height:calc(82vh - 58px)}
       .media-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}
-      .media-item{border:1px solid var(--edge);border-radius:12px;overflow:hidden;cursor:pointer;background:var(--card-background-color);text-align:left;padding:0;color:inherit;font:inherit}
+      .media-item{border:1px solid var(--edge);border-radius:12px;overflow:hidden;cursor:pointer;background:var(--card-surface);text-align:left;padding:0;color:inherit;font:inherit}
       .media-thumb{position:relative;aspect-ratio:16/9;background:#05080d;display:flex;align-items:center;justify-content:center;color:var(--muted)}
       .media-thumb img{width:100%;height:100%;object-fit:cover;display:block}
       .media-thumb ha-icon{--mdc-icon-size:28px}
