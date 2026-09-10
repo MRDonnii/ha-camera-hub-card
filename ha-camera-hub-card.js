@@ -1,4 +1,4 @@
-const VERSION = "0.4.1";
+const VERSION = "0.4.2";
 
 const EVENTS_REFRESH_MS = 2 * 60 * 1000;
 const SYSTEM_TICK_MS = 30 * 1000;
@@ -300,6 +300,14 @@ class HACameraHubCard extends HTMLElement {
 
   _parseMediaTimestamp(title) {
     if (!title) return NaN;
+    // UniFi Protects egen medie-browser navngiver klip som "MM/DD/YY HH:MM:SS <varighed>s <type>",
+    // uafhængigt af HA's sprog/lokalitet, fx "09/10/26 09:00:34 38s Audio Detection".
+    const mdy = title.match(/^(\d{2})\/(\d{2})\/(\d{2})[ ,]+(\d{2}):(\d{2}):(\d{2})/);
+    if (mdy) {
+      const [, mm, dd, yy, hh, mi, ss] = mdy.map(Number);
+      const d = new Date(2000 + yy, mm - 1, dd, hh, mi, ss);
+      if (!Number.isNaN(d.getTime())) return d.getTime();
+    }
     const isoMatch = title.match(/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}/);
     if (isoMatch) {
       const iso = new Date(isoMatch[0].replace(" ", "T"));
@@ -321,7 +329,7 @@ class HACameraHubCard extends HTMLElement {
     return this._resolvePlayableNode(next, depth + 1);
   }
 
-  _findClosestMediaChild(children, targetTs, toleranceMs = 6 * 60 * 1000) {
+  _findClosestMediaChild(children, targetTs, toleranceMs = 90 * 1000) {
     if (!Number.isFinite(targetTs)) return null;
     let best = null;
     let bestDiff = Infinity;
