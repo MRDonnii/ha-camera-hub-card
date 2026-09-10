@@ -31,11 +31,15 @@ nvr:
 
 ## Faner
 
-- **Live** — indlejrer [Advanced Camera Card](https://github.com/dermotduffy/advanced-camera-card)
-  som et responsivt live-grid for alle konfigurerede kameraer, med
-  bevægelses-/AI-triggere pr. kamera. Kortet bygges kun én gang og
-  genskabes ikke ved almindelige HA-state-opdateringer, så live-streams
-  ikke genstartes konstant.
+- **Live** — et responsivt grid med ét live-feed pr. konfigureret kamera,
+  bygget udelukkende med Home Assistants indbyggede `picture-elements`
+  (`camera_view: "live"`) — ingen eksterne HACS-kortafhængigheder. Hvert
+  feed viser kameraets seneste snapshot med det samme og fader over til
+  den rigtige live-stream, når den er klar (samme teknik som
+  [HA Home Camera Card](https://github.com/MRDonnii/ha-home-camera-card)).
+  Hver tile får en farvet kant og et aktivitetsmærke (person/dyr/køretøj/
+  bevægelse) ud fra kameraets binary_sensor-detektorer, og tryk åbner
+  mere-info for kameraet.
 - **Hændelser** — en kronologisk log over de seneste 36 timers `event.*`
   UniFi Protect-hændelser (person/dyr/køretøj/bevægelse m.m.), med filtre
   og genvej til mere-info samt "Åbn i UniFi Protect".
@@ -45,11 +49,9 @@ nvr:
 
 ### Vigtig begrænsning
 
-UniFi Protect-kameraer har ingen dedikeret "engine" i Advanced Camera Card
-(kun `frigate`/`generic`/`motioneye`/`reolink`/`tplink` findes) — de bruger
-derfor den generiske engine, som **kun** understøtter live-visning, ikke
-klip, snapshots, optagelser eller tidslinje. Derfor bruger Hændelser-fanen
-en selvbygget kronologisk log frem for klip-afspilning i kortet — reelle
+Home Assistants indbyggede live-visning giver kun *live* video — ikke
+klip, snapshots eller en tidslinje. Derfor bruger Hændelser-fanen en
+selvbygget kronologisk log frem for klip-afspilning i kortet — reelle
 videoklip skal stadig ses i den native UniFi Protect-app (linket findes i
 både Hændelser- og System-fanen).
 
@@ -58,9 +60,7 @@ både Hændelser- og System-fanen).
 Kopiér `ha-camera-hub-card.js` til
 `/config/www/ha-camera-hub-card/ha-camera-hub-card.js`, registrér den som en
 module-resource, og tilføj `custom:ha-camera-hub-card` i dashboardeditoren.
-
-Kræver [Advanced Camera Card](https://github.com/dermotduffy/advanced-camera-card)
-installeret via HACS for Live-fanen.
+Ingen HACS-afhængigheder kræves.
 
 ## Licens
 

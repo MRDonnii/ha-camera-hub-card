@@ -1,4 +1,4 @@
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 const EVENTS_REFRESH_MS = 2 * 60 * 1000;
 const SYSTEM_TICK_MS = 30 * 1000;
@@ -33,8 +33,8 @@ class HACameraHubCard extends HTMLElement {
     this._sig = "";
     this._tab = "live";
     this._filter = "all";
-    this._accCard = null;
-    this._accCreating = false;
+    this._liveFeeds = {};
+    this._liveGeneration = 0;
     this._events = [];
     this._eventsFetchedAt = 0;
     this._eventsFetching = false;
@@ -69,6 +69,8 @@ class HACameraHubCard extends HTMLElement {
       event_entity: `event.${c.area}_${c.key}_${c.ai ? "smart_detection" : "motion_detection"}`,
       motion_entity: `binary_sensor.${c.key}_motion`,
     }));
+    this._liveFeeds = {};
+    this._liveGeneration += 1;
     this._buildShell();
   }
 
@@ -97,8 +99,7 @@ class HACameraHubCard extends HTMLElement {
     this._hass = hass;
     const ids = this._watchedIds();
     const sig = JSON.stringify(ids.map((id) => [id, hass?.states?.[id]?.state]));
-    if (this._accCard) this._accCard.hass = hass;
-    else this._ensureLiveCard();
+    this._updateLiveTiles();
     if (sig !== this._sig) {
       this._sig = sig;
       this._renderSystem();
@@ -142,50 +143,97 @@ class HACameraHubCard extends HTMLElement {
     return Number.isNaN(d.getTime()) ? "--:--" : d.toLocaleTimeString("da-DK", { hour: "2-digit", minute: "2-digit" });
   }
 
-  async _ensureLiveCard() {
-    if (this._accCard || this._accCreating || !this._hass) return;
-    this._accCreating = true;
+  _liveActivity(cam) {
+    const on = (suffix) => this._s(`binary_sensor.${cam.key}_${suffix}`)?.state === "on";
+    if (cam.ai) {
+      if (on("person_detected")) return { text: "Person", icon: "mdi:account", cls: "person" };
+      if (on("animal_detected")) return { text: "Dyr", icon: "mdi:paw", cls: "animal" };
+      if (on("vehicle_detected")) return { text: "Køretøj", icon: "mdi:car", cls: "vehicle" };
+      if (on("object_detected") || on("audio_object_detected") || on("license_plate_detected") || (cam.doorbell && on("doorbell")))
+        return { text: "Hændelse", icon: "mdi:bell-ring", cls: "object" };
+    }
+    if (this._s(cam.motion_entity)?.state === "on") return { text: "Bevægelse", icon: "mdi:motion-sensor", cls: "motion" };
+    return { text: "Roligt", icon: "mdi:shield-check-outline", cls: "quiet" };
+  }
+
+  _updateLiveTiles() {
+    if (!this._hass) return;
+    (this._cameras || []).forEach((cam) => {
+      this._setLiveFeed(cam);
+      const tile = this.shadowRoot.querySelector(`[data-cam-tile="${cam.key}"]`);
+      const badge = this.shadowRoot.querySelector(`[data-cam-badge="${cam.key}"]`);
+      if (tile && badge) {
+        const activity = this._liveActivity(cam);
+        tile.className = `cam-tile ${activity.cls}`;
+        badge.innerHTML = `<ha-icon icon="${activity.icon}"></ha-icon><span>${this._esc(activity.text)}</span>`;
+      }
+    });
+  }
+
+  async _setLiveFeed(cam) {
+    const key = cam.key;
+    if (this._liveFeeds[key] === cam.camera_entity) {
+      const card = this.shadowRoot.querySelector(`[data-feed="${key}"] [data-live-card]`);
+      if (card) card.hass = this._hass;
+      return;
+    }
+    this._liveFeeds[key] = cam.camera_entity;
+    const feed = this.shadowRoot.querySelector(`[data-feed="${key}"]`);
+    if (!feed) return;
+    const generation = this._liveGeneration;
+    const state = this._s(cam.camera_entity);
+    if (!state) {
+      feed.innerHTML = `<div class="missing"><div><ha-icon icon="mdi:camera-off-outline"></ha-icon><br>Kamera ikke fundet</div></div>`;
+      return;
+    }
+    feed.classList.remove("ready");
+    const snapshot = document.createElement("img");
+    snapshot.className = "snapshot";
+    snapshot.alt = cam.name || key;
+    snapshot.decoding = "async";
+    const entityPicture = state.attributes?.entity_picture;
+    if (entityPicture) snapshot.src = this._hass.hassUrl(entityPicture);
+    else if (state.attributes?.access_token) snapshot.src = this._hass.hassUrl(`/api/camera_proxy/${cam.camera_entity}?token=${state.attributes.access_token}`);
+    feed.replaceChildren(snapshot);
     try {
       const helpers = await window.loadCardHelpers();
-      const cameras = this._cameras.map((cam) => {
-        const triggerEntities = [cam.motion_entity];
-        if (cam.ai) {
-          triggerEntities.push(
-            `binary_sensor.${cam.key}_person_detected`,
-            `binary_sensor.${cam.key}_animal_detected`,
-            `binary_sensor.${cam.key}_vehicle_detected`,
-            `binary_sensor.${cam.key}_object_detected`,
-          );
-        }
-        return {
-          camera_entity: cam.camera_entity,
-          title: cam.name,
-          icon: cam.icon || "mdi:cctv",
-          triggers: { entities: triggerEntities, doorbell: !!cam.doorbell },
-        };
-      });
+      if (generation !== this._liveGeneration || this._liveFeeds[key] !== cam.camera_entity) return;
       const card = await helpers.createCardElement({
-        type: "custom:advanced-camera-card",
-        cameras,
-        live: {
-          display: { mode: "grid", grid_max_columns: 4, grid_selected_width_factor: 1 },
-          auto_play: ["selected", "visible"],
-          auto_mute: ["unselected", "hidden"],
-        },
-        view: { default: "live" },
-        menu: { style: "overlay" },
+        type: "picture-elements",
+        camera_image: cam.camera_entity,
+        camera_view: "live",
+        elements: [],
+        aspect_ratio: "16:9",
+        fit_mode: "cover",
+        tap_action: { action: "none" },
       });
+      card.classList.add("live-card");
+      card.dataset.liveCard = "";
       card.hass = this._hass;
-      this._accCard = card;
-      const mount = this.shadowRoot.querySelector("[data-live-mount]");
-      mount?.replaceChildren(card);
+      feed.appendChild(card);
+      this._revealWhenReady(feed, card, generation, key);
     } catch (error) {
-      console.error("HA Camera Hub Card: could not load advanced-camera-card", error);
-      const mount = this.shadowRoot.querySelector("[data-live-mount]");
-      if (mount) mount.innerHTML = `<div class="empty">Live-visning kunne ikke indlæses. Er "Advanced Camera Card" installeret via HACS?</div>`;
-    } finally {
-      this._accCreating = false;
+      feed.innerHTML = `<div class="missing"><div><ha-icon icon="mdi:alert-circle-outline"></ha-icon><br>Stream kunne ikke indlæses</div></div>`;
+      console.error("HA Camera Hub Card", error);
     }
+  }
+
+  _mediaReady(node) {
+    if (!node) return false;
+    if (node instanceof HTMLVideoElement && node.readyState >= 2) return true;
+    if (node instanceof HTMLImageElement && node.complete && node.naturalWidth > 0) return true;
+    if (node.shadowRoot && this._mediaReady(node.shadowRoot)) return true;
+    return Array.from(node.children || []).some((child) => this._mediaReady(child));
+  }
+
+  _revealWhenReady(feed, card, generation, key, attempt = 0) {
+    if (generation !== this._liveGeneration || !card.isConnected) return;
+    if ((attempt >= 4 && this._mediaReady(card)) || attempt >= 80) {
+      feed.classList.add("ready");
+      setTimeout(() => feed.querySelector(".snapshot")?.remove(), 320);
+      return;
+    }
+    setTimeout(() => this._revealWhenReady(feed, card, generation, key, attempt + 1), 100);
   }
 
   async _fetchEvents() {
@@ -322,8 +370,31 @@ class HACameraHubCard extends HTMLElement {
       .tab ha-icon{--mdc-icon-size:16px}
       .tab.active{color:#fff;background:var(--accent);border-color:var(--accent)}
       .panel[hidden]{display:none}
-      .live-mount{min-height:200px;border-radius:16px;overflow:hidden}
       .empty{padding:34px 16px;text-align:center;color:var(--secondary-text-color);font-size:12.5px}
+      .live-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
+      .cam-tile{border:1px solid var(--edge);border-radius:14px;overflow:hidden;background:var(--card-background-color)}
+      .cam-tile.person{border-color:color-mix(in srgb,var(--danger) 55%,var(--edge))}
+      .cam-tile.animal{border-color:color-mix(in srgb,var(--animal) 55%,var(--edge))}
+      .cam-tile.vehicle{border-color:color-mix(in srgb,var(--accent) 55%,var(--edge))}
+      .cam-tile.object{border-color:color-mix(in srgb,var(--object) 55%,var(--edge))}
+      .cam-tile.motion{border-color:color-mix(in srgb,var(--motion) 55%,var(--edge))}
+      .cam-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px}
+      .cam-bar b{font-size:12px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .cam-badge{display:flex;align-items:center;gap:4px;flex:0 0 auto;font-size:10px;font-weight:800;color:var(--good)}
+      .cam-badge ha-icon{--mdc-icon-size:14px}
+      .cam-tile.person .cam-badge{color:var(--danger)}
+      .cam-tile.animal .cam-badge{color:var(--animal)}
+      .cam-tile.vehicle .cam-badge{color:var(--accent)}
+      .cam-tile.object .cam-badge{color:var(--object)}
+      .cam-tile.motion .cam-badge{color:var(--motion)}
+      .feed{position:relative;aspect-ratio:16/9;overflow:hidden;cursor:pointer;background:#05080d}
+      .feed>*{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;min-width:0!important;min-height:0!important;display:block;overflow:hidden}
+      .snapshot{z-index:2;object-fit:cover;opacity:1;transition:opacity .28s ease}
+      .live-card{z-index:1;opacity:0;transition:opacity .28s ease}
+      .feed.ready .snapshot{opacity:0;pointer-events:none}
+      .feed.ready .live-card{opacity:1}
+      .missing{display:grid!important;place-items:center;color:var(--muted);font-size:11px;text-align:center}
+      .missing ha-icon{--mdc-icon-size:24px;margin-bottom:4px}
       .filters{display:flex;gap:6px;overflow-x:auto;padding:0 4px 12px}
       .filter-chip{flex:0 0 auto;display:flex;align-items:center;gap:5px;padding:7px 12px;border-radius:999px;border:1px solid var(--edge);background:transparent;color:var(--secondary-text-color);font-size:11.5px;font-weight:700;cursor:pointer;white-space:nowrap}
       .filter-chip ha-icon{--mdc-icon-size:14px}
@@ -361,7 +432,17 @@ class HACameraHubCard extends HTMLElement {
         <div><strong>${this._esc(c.title)}</strong><span>${this._esc(c.subtitle)}</span></div>
       </div>
       <div class="tabs">${tabs.map(([key, label, icon]) => `<button class="tab ${this._tab === key ? "active" : ""}" data-tab="${key}"><ha-icon icon="${icon}"></ha-icon><span>${label}</span></button>`).join("")}</div>
-      <div class="panel" data-panel="live" ${this._tab === "live" ? "" : "hidden"}><div class="live-mount" data-live-mount><div class="empty">Indlæser live-visning…</div></div></div>
+      <div class="panel" data-panel="live" ${this._tab === "live" ? "" : "hidden"}><div class="live-grid">${(this._cameras || [])
+        .map(
+          (cam) => `<section class="cam-tile" data-cam-tile="${this._esc(cam.key)}">
+            <div class="cam-bar">
+              <b>${this._esc(cam.name || cam.key)}</b>
+              <span class="cam-badge" data-cam-badge="${this._esc(cam.key)}"><ha-icon icon="mdi:shield-check-outline"></ha-icon><span>Roligt</span></span>
+            </div>
+            <div class="feed" data-feed="${this._esc(cam.key)}"><div class="empty">Indlæser…</div></div>
+          </section>`,
+        )
+        .join("")}</div></div>
       <div class="panel" data-panel="events" ${this._tab === "events" ? "" : "hidden"}><div data-events-mount></div></div>
       <div class="panel" data-panel="system" ${this._tab === "system" ? "" : "hidden"}><div data-system-mount></div></div>
     </ha-card>`;
@@ -375,12 +456,19 @@ class HACameraHubCard extends HTMLElement {
         });
         if (this._tab === "events") this._renderEvents();
         if (this._tab === "system") this._renderSystem();
-        if (this._tab === "live") this._ensureLiveCard();
+        if (this._tab === "live") this._updateLiveTiles();
+      }),
+    );
+
+    this.shadowRoot.querySelectorAll("[data-feed]").forEach((feed) =>
+      feed.addEventListener("click", () => {
+        const cam = (this._cameras || []).find((c2) => c2.key === feed.dataset.feed);
+        if (cam) this._more(cam.camera_entity);
       }),
     );
 
     if (this._hass) {
-      this._ensureLiveCard();
+      this._updateLiveTiles();
       this._renderSystem();
     }
     if (this._events.length) this._renderEvents();
@@ -396,7 +484,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "ha-camera-hub-card",
   name: "HA Camera Hub Card",
-  description: "Samlet kamera-hub: live-grid (via Advanced Camera Card), hændelseslog og NVR-systemstatus for UniFi Protect",
+  description: "Samlet kamera-hub: live-grid, hændelseslog og NVR-systemstatus for UniFi Protect",
   preview: true,
 });
 console.info(
