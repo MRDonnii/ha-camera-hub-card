@@ -1,0 +1,6 @@
+{
+  "name": "HA Camera Hub Card",
+  "filename": "ha-camera-hub-card.js",
+  "content_in_root": true,
+  "render_readme": true
+}
