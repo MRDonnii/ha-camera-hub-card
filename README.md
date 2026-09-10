@@ -43,9 +43,14 @@ nvr:
 - **Hændelser** — en kronologisk log over de seneste 36 timers `event.*`
   UniFi Protect-hændelser (person/dyr/køretøj/bevægelse m.m.), med filtre
   og et lille thumbnail pr. hændelse (hentet fra UniFi Protects eget
-  klip-bibliotek, matchet på tidsstempel, cachet pr. kamera i 3 minutter).
-  Listen opdateres hvert 30. sekund i baggrunden og altid med det samme,
-  når du skifter til fanen. Tryk på en hændelse åbner en indbygget
+  klip-bibliotek, matchet på event-ID eller et tidszonestabilt tidsstempel og
+  cachet pr. kamera i 3 minutter). Beskyttede thumbnail-filer hentes med den
+  aktive Home Assistant-session og vises som lokale blob-URL'er; adgangstokenet
+  lægges ikke i DOM'en. Smart-detektion, almindelig bevægelse og Fordørens
+  dørklokkehændelser indgår. Nye hændelser indsættes straks fra
+  Home Assistants live-state og afstemmes efterfølgende med de seneste 36
+  timers recorder-historik. Listen kontrolleres desuden hvert 30. sekund i
+  baggrunden og altid, når du skifter til fanen. Tryk på en hændelse åbner en indbygget
   medie-browser (Home Assistants `media_source`-API mod UniFi Protects
   egen integration), matcher hændelsens tidsstempel mod klippene i
   kameraets mappe og **starter automatisk afspilning af det nærmeste
@@ -91,6 +96,12 @@ Kopiér `ha-camera-hub-card.js` til
 `/config/www/ha-camera-hub-card/ha-camera-hub-card.js`, registrér den som en
 module-resource, og tilføj `custom:ha-camera-hub-card` i dashboardeditoren.
 Ingen HACS-afhængigheder kræves.
+
+Kortet bevarer de eksisterende live-feed-elementer ved almindelige state- og
+hændelsesopdateringer. Systemværdier og aktivitetsmærker opdateres målrettet,
+så streams, hover og fokus ikke nulstilles. De tunge live-streams afbrydes dog
+bevidst, mens Hændelser eller System er valgt, og startes igen ved tilbagevenden
+til Live; det frigør forbindelser til thumbnails og klip.
 
 ## Licens
 

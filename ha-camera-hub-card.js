@@ -1,4 +1,4 @@
-const VERSION = "0.5.0";
+const VERSION = "0.5.4";
 
 const EVENTS_REFRESH_MS = 30 * 1000;
 const SYSTEM_TICK_MS = 30 * 1000;
@@ -13,6 +13,7 @@ const TYPE_INFO = {
   package: { label: "Pakke", icon: "mdi:package-variant", cls: "object" },
   license_plate: { label: "Nummerplade", icon: "mdi:card-text-outline", cls: "object" },
   face: { label: "Ansigt", icon: "mdi:face-recognition", cls: "object" },
+  ring: { label: "Dørklokke", icon: "mdi:doorbell-video", cls: "object" },
   motion: { label: "Bevægelse", icon: "mdi:motion-sensor", cls: "motion" },
 };
 const FILTERS = [
@@ -39,6 +40,12 @@ class HACameraHubCard extends HTMLElement {
     this._eventsFetchedAt = 0;
     this._eventsFetching = false;
     this._media = null;
+    this._eventSig = "";
+    this._eventsRenderSig = "";
+    this._thumbGeneration = 0;
+    this._mediaRoot = null;
+    this._mediaRootFetchedAt = 0;
+    this._thumbBlobCache = new Map();
   }
 
   static getStubConfig() {
@@ -67,15 +74,31 @@ class HACameraHubCard extends HTMLElement {
 
   setConfig(config) {
     const stub = HACameraHubCard.getStubConfig();
-    this._config = { ...stub, ...config, nvr: { ...stub.nvr, ...(config?.nvr || {}) } };
-    this._cameras = (this._config.cameras || []).map((c) => ({
-      ...c,
-      camera_entity: `camera.${c.key}_${c.res || "medium"}_resolution_channel`,
-      event_entity: `event.${c.area}_${c.key}_${c.ai ? "smart_detection" : "motion_detection"}`,
-      motion_entity: `binary_sensor.${c.key}_motion`,
-    }));
+    const nextConfig = { ...stub, ...config, nvr: { ...stub.nvr, ...(config?.nvr || {}) } };
+    const signature = JSON.stringify(nextConfig);
+    this._config = nextConfig;
+    if (signature === this._configSignature) return;
+    this._configSignature = signature;
+    this._cameras = (this._config.cameras || []).map((c) => {
+      const eventPrefix = `event.${c.area}_${c.key}`;
+      const eventSources = [
+        ...(c.ai ? [{ id: `${eventPrefix}_smart_detection` }] : []),
+        { id: `${eventPrefix}_motion_detection`, fallbackType: "motion" },
+        ...(c.doorbell ? [{ id: `event.${c.key}_doorbell`, fallbackType: "ring" }] : []),
+      ];
+      return {
+        ...c,
+        camera_entity: `camera.${c.key}_${c.res || "medium"}_resolution_channel`,
+        event_entity: eventSources[0]?.id,
+        event_sources: eventSources,
+        motion_entity: `binary_sensor.${c.key}_motion`,
+      };
+    });
     this._liveFeeds = {};
     this._liveGeneration += 1;
+    this._sig = "";
+    this._eventSig = "";
+    this._eventsRenderSig = "";
     this._buildShell();
   }
 
@@ -87,6 +110,9 @@ class HACameraHubCard extends HTMLElement {
   disconnectedCallback() {
     clearInterval(this._eventsTimer);
     clearInterval(this._systemTimer);
+    clearTimeout(this._eventsDebounceTimer);
+    for (const cached of this._thumbBlobCache.values()) if (cached.url) URL.revokeObjectURL(cached.url);
+    this._thumbBlobCache.clear();
     this._eventsTimer = undefined;
     this._systemTimer = undefined;
   }
@@ -96,7 +122,7 @@ class HACameraHubCard extends HTMLElement {
     return [
       c.nvr.storage_entity, c.nvr.capacity_entity, c.nvr.cpu_entity, c.nvr.temp_entity, c.nvr.memory_entity, c.nvr.uptime_entity,
       ...(c.nvr.hdd_entities || []),
-      ...(this._cameras || []).flatMap((cam) => [cam.camera_entity, cam.event_entity]),
+      ...(this._cameras || []).flatMap((cam) => [cam.camera_entity, ...(cam.event_sources || []).map((source) => source.id)]),
     ].filter(Boolean);
   }
 
@@ -104,10 +130,20 @@ class HACameraHubCard extends HTMLElement {
     this._hass = hass;
     const ids = this._watchedIds();
     const sig = JSON.stringify(ids.map((id) => [id, hass?.states?.[id]?.state]));
+    const eventSig = JSON.stringify((this._cameras || []).flatMap((cam) => (cam.event_sources || []).map((source) => {
+      const state = hass?.states?.[source.id];
+      return [source.id, state?.state, state?.attributes?.event_id, state?.attributes?.event_type];
+    })));
     this._updateLiveTiles();
     if (sig !== this._sig) {
       this._sig = sig;
       this._renderSystem();
+    }
+    if (eventSig !== this._eventSig) {
+      this._eventSig = eventSig;
+      this._ingestLiveEvents();
+      clearTimeout(this._eventsDebounceTimer);
+      this._eventsDebounceTimer = setTimeout(() => this._fetchEvents(), 750);
     }
   }
 
@@ -146,7 +182,7 @@ class HACameraHubCard extends HTMLElement {
   }
   _findMediaChild(node, name) {
     if (!name || !Array.isArray(node?.children)) return null;
-    const norm = (s) => String(s || "").toLowerCase().trim();
+    const norm = (s) => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
     const target = norm(name);
     return node.children.find((child) => norm(child.title) === target) || node.children.find((child) => norm(child.title).includes(target)) || null;
   }
@@ -164,6 +200,45 @@ class HACameraHubCard extends HTMLElement {
     return Number.isNaN(d.getTime()) ? "--:--" : d.toLocaleTimeString("da-DK", { hour: "2-digit", minute: "2-digit" });
   }
 
+  _eventKey(event) {
+    return event.eventId || `${event.cameraKey}:${event.ts}:${event.type}`;
+  }
+
+  _wallTimestamp(value) {
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return NaN;
+    const timeZone = this._hass?.config?.time_zone || "Europe/Copenhagen";
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
+      timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    }).formatToParts(date).filter((part) => part.type !== "literal").map((part) => [part.type, Number(part.value)]));
+    return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  }
+
+  _ingestLiveEvents() {
+    let changed = false;
+    for (const cam of this._cameras || []) {
+      for (const source of cam.event_sources || []) {
+        const state = this._s(source.id);
+        const iso = state?.state;
+        const ts = Date.parse(iso || "");
+        const type = state?.attributes?.event_type || source.fallbackType;
+        if (!Number.isFinite(ts) || !type || Date.now() - ts > EVENTS_WINDOW_HOURS * 3600000) continue;
+        const eventId = state.attributes?.event_id;
+        const candidate = { ts, iso, cameraKey: cam.key, cameraName: cam.name, cameraEntity: cam.camera_entity, type, eventId };
+        const exists = this._events.some((event) => this._eventKey(event) === this._eventKey(candidate));
+        if (exists) continue;
+        this._events.push(candidate);
+        if (this._camThumbs?.[cam.key]) delete this._camThumbs[cam.key];
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    this._events.sort((a, b) => b.ts - a.ts);
+    this._events = this._events.slice(0, 300);
+    if (this._tab === "events") this._renderEvents(true);
+  }
+
   _liveActivity(cam) {
     const on = (suffix) => this._s(`binary_sensor.${cam.key}_${suffix}`)?.state === "on";
     if (cam.ai) {
@@ -178,7 +253,7 @@ class HACameraHubCard extends HTMLElement {
   }
 
   _updateLiveTiles() {
-    if (!this._hass) return;
+    if (!this._hass || this._tab !== "live") return;
     (this._cameras || []).forEach((cam) => {
       this._setLiveFeed(cam);
       const tile = this.shadowRoot.querySelector(`[data-cam-tile="${cam.key}"]`);
@@ -186,8 +261,19 @@ class HACameraHubCard extends HTMLElement {
       if (tile && badge) {
         const activity = this._liveActivity(cam);
         tile.className = `cam-tile ${activity.cls}`;
-        badge.innerHTML = `<ha-icon icon="${activity.icon}"></ha-icon><span>${this._esc(activity.text)}</span>`;
+        badge.querySelector("ha-icon")?.setAttribute("icon", activity.icon);
+        const label = badge.querySelector("span");
+        if (label && label.textContent !== activity.text) label.textContent = activity.text;
       }
+    });
+  }
+
+  _suspendLiveFeeds() {
+    this._liveGeneration += 1;
+    this._liveFeeds = {};
+    this.shadowRoot.querySelectorAll("[data-feed]").forEach((feed) => {
+      feed.classList.remove("ready");
+      feed.replaceChildren();
     });
   }
 
@@ -259,11 +345,11 @@ class HACameraHubCard extends HTMLElement {
 
   async _fetchEvents() {
     if (!this._hass?.callApi || this._eventsFetching) return;
-    const ids = (this._cameras || []).map((c) => c.event_entity).filter(Boolean);
+    const ids = (this._cameras || []).flatMap((cam) => (cam.event_sources || []).map((source) => source.id)).filter(Boolean);
     if (!ids.length) return;
     this._eventsFetching = true;
     try {
-      const start = new Date(Date.now() - EVENTS_WINDOW_HOURS * 3600000);
+      const start = new Date(Date.now() - (this._eventsFetchedAt ? 5 * 60 * 1000 : EVENTS_WINDOW_HOURS * 3600000));
       const path = `history/period/${encodeURIComponent(start.toISOString())}?filter_entity_id=${encodeURIComponent(ids.join(","))}`;
       const result = await this._hass.callApi("GET", path);
       const byEntity = new Map();
@@ -273,18 +359,30 @@ class HACameraHubCard extends HTMLElement {
       }
       const events = [];
       for (const cam of this._cameras) {
-        const series = byEntity.get(cam.event_entity) || [];
-        for (const row of series) {
-          const ts = row.state;
-          const d = new Date(ts);
-          if (Number.isNaN(d.getTime())) continue;
-          const eventType = row.attributes?.event_type || (cam.ai ? undefined : "motion");
-          if (!eventType) continue;
-          events.push({ ts: d.getTime(), iso: ts, cameraKey: cam.key, cameraName: cam.name, cameraEntity: cam.camera_entity, type: eventType });
+        for (const source of cam.event_sources || []) {
+          const series = byEntity.get(source.id) || [];
+          for (const row of series) {
+            const ts = row.state;
+            const d = new Date(ts);
+            if (Number.isNaN(d.getTime())) continue;
+            const eventType = row.attributes?.event_type || source.fallbackType;
+            if (!eventType) continue;
+            events.push({
+              ts: d.getTime(), iso: ts, cameraKey: cam.key, cameraName: cam.name,
+              cameraEntity: cam.camera_entity, type: eventType, eventId: row.attributes?.event_id,
+            });
+          }
         }
       }
-      events.sort((a, b) => b.ts - a.ts);
-      this._events = events.slice(0, 300);
+      const combined = new Map();
+      for (const event of [...events, ...this._events]) {
+        const fallbackKey = `${event.cameraKey}:${event.ts}:${event.type}`;
+        const existing = combined.get(fallbackKey);
+        const merged = existing ? { ...existing, ...event, eventId: event.eventId || existing.eventId } : event;
+        combined.set(fallbackKey, merged);
+      }
+      const cutoff = Date.now() - EVENTS_WINDOW_HOURS * 3600000;
+      this._events = [...combined.values()].filter((event) => event.ts >= cutoff).sort((a, b) => b.ts - a.ts).slice(0, 300);
       this._eventsFetchedAt = Date.now();
       if (this._tab === "events") this._renderEvents();
     } catch (error) {
@@ -305,8 +403,7 @@ class HACameraHubCard extends HTMLElement {
     const mdy = title.match(/^(\d{2})\/(\d{2})\/(\d{2})[ ,]+(\d{2}):(\d{2}):(\d{2})/);
     if (mdy) {
       const [, mm, dd, yy, hh, mi, ss] = mdy.map(Number);
-      const d = new Date(2000 + yy, mm - 1, dd, hh, mi, ss);
-      if (!Number.isNaN(d.getTime())) return d.getTime();
+      return Date.UTC(2000 + yy, mm - 1, dd, hh, mi, ss);
     }
     const isoMatch = title.match(/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}/);
     if (isoMatch) {
@@ -323,6 +420,7 @@ class HACameraHubCard extends HTMLElement {
     if (children.some((child) => child.can_play)) return node;
     const preferred =
       children.find((child) => /all\s*events?/i.test(child.title)) ||
+      children.find((child) => /:all:recent:1$/.test(child.media_content_id || "") || /last\s*24\s*hours?/i.test(child.title)) ||
       (children.length === 1 ? children[0] : children.find((child) => child.can_expand));
     if (!preferred) return node;
     const next = await this._browseMedia(preferred.media_content_id);
@@ -331,13 +429,14 @@ class HACameraHubCard extends HTMLElement {
 
   _findClosestMediaChild(children, targetTs, toleranceMs = 90 * 1000) {
     if (!Number.isFinite(targetTs)) return null;
+    const targetWallTs = this._wallTimestamp(targetTs);
     let best = null;
     let bestDiff = Infinity;
     for (const child of children) {
       if (!child.can_play) continue;
       const ts = this._parseMediaTimestamp(child.title);
       if (Number.isNaN(ts)) continue;
-      const diff = Math.abs(ts - targetTs);
+      const diff = Math.abs(ts - targetWallTs);
       if (diff < bestDiff) {
         bestDiff = diff;
         best = child;
@@ -525,11 +624,11 @@ class HACameraHubCard extends HTMLElement {
       .map((e) => {
         const info = this._typeInfo(e.type);
         return `<div class="event-row" data-media-cam="${this._esc(e.cameraKey)}" data-media-ts="${e.ts}" title="Afspil hændelse">
-          <div class="event-thumb" data-thumb-key="${this._esc(e.cameraKey)}" data-thumb-ts="${e.ts}"><ha-icon icon="mdi:cctv"></ha-icon></div>
+          <div class="event-thumb" data-thumb-key="${this._esc(e.cameraKey)}" data-thumb-ts="${e.ts}" data-event-id="${this._esc(e.eventId || "")}"><ha-icon icon="mdi:cctv"></ha-icon></div>
           <div class="event-icon ${info.cls}"><ha-icon icon="${info.icon}"></ha-icon></div>
           <div class="event-main">
             <b>${this._esc(e.cameraName)}</b>
-            <span>${this._esc(info.label)} &middot; ${this._time(e.iso)} &middot; ${this._esc(this._ago(e.iso))}</span>
+            <span data-event-meta data-event-iso="${this._esc(e.iso)}" data-event-label="${this._esc(info.label)}">${this._esc(info.label)} &middot; ${this._time(e.iso)} &middot; ${this._esc(this._ago(e.iso))}</span>
           </div>
           <button class="event-open" data-more="${this._esc(e.cameraEntity)}" title="Vis kamera nu" onclick="event.stopPropagation()"><ha-icon icon="mdi:cctv"></ha-icon></button>
         </div>`;
@@ -545,7 +644,7 @@ class HACameraHubCard extends HTMLElement {
     const cam = (this._cameras || []).find((c) => c.key === camKey);
     if (!cam || !this._hass?.callWS) return cached?.items || [];
     try {
-      const root = await this._browseMedia("media-source://unifiprotect");
+      const root = await this._getMediaRoot();
       let cameraNode = this._findMediaChild(root, cam.name);
       if (!cameraNode && Array.isArray(root.children)) {
         for (const child of root.children) {
@@ -563,7 +662,11 @@ class HACameraHubCard extends HTMLElement {
       const playable = await this._resolvePlayableNode(camNode);
       const items = (playable.children || [])
         .filter((child) => child.can_play && child.thumbnail)
-        .map((child) => ({ ts: this._parseMediaTimestamp(child.title), thumbnail: this._mediaUrl(child.thumbnail) }))
+        .map((child) => ({
+          ts: this._parseMediaTimestamp(child.title),
+          eventId: String(child.media_content_id || "").match(/:event:([^:]+)$/)?.[1],
+          thumbnail: this._mediaUrl(child.thumbnail),
+        }))
         .filter((item) => Number.isFinite(item.ts));
       this._camThumbs[camKey] = { fetchedAt: now, items };
       return items;
@@ -572,11 +675,31 @@ class HACameraHubCard extends HTMLElement {
     }
   }
 
-  _closestThumbUrl(items, targetTs, toleranceMs = 90 * 1000) {
+  async _getMediaRoot() {
+    const now = Date.now();
+    if (this._mediaRoot && now - this._mediaRootFetchedAt < 60 * 1000) return this._mediaRoot;
+    if (!this._mediaRootPromise) {
+      this._mediaRootPromise = this._browseMedia("media-source://unifiprotect")
+        .then((root) => {
+          this._mediaRoot = root;
+          this._mediaRootFetchedAt = Date.now();
+          return root;
+        })
+        .finally(() => { this._mediaRootPromise = null; });
+    }
+    return this._mediaRootPromise;
+  }
+
+  _closestThumbUrl(items, targetTs, eventId, toleranceMs = 90 * 1000) {
+    if (eventId) {
+      const exact = items.find((item) => item.eventId === eventId);
+      if (exact) return exact.thumbnail;
+    }
+    const targetWallTs = this._wallTimestamp(targetTs);
     let best = null;
     let bestDiff = Infinity;
     for (const item of items) {
-      const diff = Math.abs(item.ts - targetTs);
+      const diff = Math.abs(item.ts - targetWallTs);
       if (diff < bestDiff) {
         bestDiff = diff;
         best = item;
@@ -585,43 +708,92 @@ class HACameraHubCard extends HTMLElement {
     return bestDiff <= toleranceMs ? best?.thumbnail : null;
   }
 
-  async _hydrateEventThumbs(mount) {
-    const nodes = Array.from(mount.querySelectorAll("[data-thumb-key]"));
-    const keys = [...new Set(nodes.map((node) => node.dataset.thumbKey))];
-    for (const key of keys) {
-      const items = await this._ensureCamThumbs(key);
-      if (!items.length || !mount.isConnected) continue;
-      nodes
-        .filter((node) => node.dataset.thumbKey === key)
-        .forEach((node) => {
-          const ts = Number(node.dataset.thumbTs);
-          const url = this._closestThumbUrl(items, ts);
-          if (url && node.isConnected) node.innerHTML = `<img src="${this._esc(url)}" alt="">`;
-        });
-    }
+  async _authenticatedThumbnail(url) {
+    const cached = this._thumbBlobCache.get(url);
+    if (cached?.url) return cached.url;
+    if (cached?.promise) return cached.promise;
+    const auth = this._hass?.auth || this._hass?.connection?.options?.auth;
+    const token = auth?.data?.access_token || auth?.accessToken;
+    if (!token) throw new Error("Home Assistant access token is unavailable");
+    const promise = fetch(url, {
+      credentials: "same-origin",
+      headers: { Authorization: `Bearer ${token}` },
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(`Thumbnail request failed (${response.status})`);
+      const objectUrl = URL.createObjectURL(await response.blob());
+      this._thumbBlobCache.set(url, { url: objectUrl, fetchedAt: Date.now() });
+      while (this._thumbBlobCache.size > 240) {
+        const [oldKey, oldValue] = this._thumbBlobCache.entries().next().value;
+        if (oldValue?.url) URL.revokeObjectURL(oldValue.url);
+        this._thumbBlobCache.delete(oldKey);
+      }
+      return objectUrl;
+    }).catch((error) => {
+      this._thumbBlobCache.delete(url);
+      throw error;
+    });
+    this._thumbBlobCache.set(url, { promise });
+    return promise;
   }
 
-  _renderEvents() {
+  async _hydrateEventThumbs(mount) {
+    this._thumbGeneration += 1;
+    const nodes = Array.from(mount.querySelectorAll("[data-thumb-key]"));
+    const keys = [...new Set(nodes.map((node) => node.dataset.thumbKey))];
+    await Promise.all(keys.map(async (key) => {
+      const items = await this._ensureCamThumbs(key);
+      if (!items.length || !mount.isConnected) return;
+      const jobs = Array.from(mount.querySelectorAll(`[data-thumb-key="${CSS.escape(key)}"]`)).map((node) => {
+        const ts = Number(node.dataset.thumbTs);
+        const sourceUrl = this._closestThumbUrl(items, ts, node.dataset.eventId);
+        return sourceUrl ? { node, sourceUrl } : null;
+      }).filter(Boolean);
+      for (const job of jobs) {
+        const cachedBlob = this._thumbBlobCache.get(job.sourceUrl)?.url;
+        if (!job.node.isConnected || (job.node.dataset.thumbnailSource === job.sourceUrl && cachedBlob && job.node.querySelector("img")?.src === cachedBlob)) continue;
+        try {
+          const objectUrl = await this._authenticatedThumbnail(job.sourceUrl);
+          if (!job.node.isConnected) continue;
+          job.node.dataset.thumbnailSource = job.sourceUrl;
+          job.node.replaceChildren(Object.assign(document.createElement("img"), { src: objectUrl, alt: "" }));
+        } catch (error) {
+          console.warn("HA Camera Hub Card: thumbnail could not be loaded", error);
+        }
+      }
+    }));
+  }
+
+  _renderEvents(forceStructure = false) {
     const mount = this.shadowRoot.querySelector("[data-events-mount]");
     if (!mount) return;
+    const visible = (this._filter === "all" ? this._events : this._events.filter((event) => this._typeInfo(event.type).cls === this._filter)).slice(0, 150);
+    const signature = JSON.stringify([this._filter, visible.map((event) => [this._eventKey(event), event.eventId])]);
+    if (!forceStructure && signature === this._eventsRenderSig && mount.hasChildNodes()) {
+      mount.querySelectorAll("[data-event-meta]").forEach((meta) => {
+        const value = `${meta.dataset.eventLabel} · ${this._time(meta.dataset.eventIso)} · ${this._ago(meta.dataset.eventIso)}`;
+        if (meta.textContent !== value) meta.textContent = value;
+      });
+      this._hydrateEventThumbs(mount);
+      return;
+    }
+    this._eventsRenderSig = signature;
     mount.innerHTML = `<div class="filters">${FILTERS.map(
       ([key, label, icon]) => `<button class="filter-chip ${this._filter === key ? "active" : ""}" data-filter="${key}"><ha-icon icon="${icon}"></ha-icon>${label}</button>`,
     ).join("")}</div>${this._eventsHtml()}`;
-    mount.querySelectorAll("[data-filter]").forEach((el) =>
-      el.addEventListener("click", () => {
-        this._filter = el.dataset.filter;
-        this._renderEvents();
-      }),
-    );
-    mount.querySelectorAll("[data-more]").forEach((el) => el.addEventListener("click", () => this._more(el.dataset.more)));
-    mount.querySelectorAll("[data-nav]").forEach((el) => el.addEventListener("click", () => this._navigate(el.dataset.nav)));
-    mount.querySelectorAll("[data-media-cam]").forEach((el) =>
-      el.addEventListener("click", () => {
-        const cam = (this._cameras || []).find((c) => c.key === el.dataset.mediaCam);
-        const ts = Number(el.dataset.mediaTs);
+    if (!mount.dataset.bound) {
+      mount.dataset.bound = "true";
+      mount.addEventListener("click", (event) => {
+        const more = event.target.closest?.("[data-more]");
+        if (more) { event.stopPropagation(); this._more(more.dataset.more); return; }
+        const filter = event.target.closest?.("[data-filter]");
+        if (filter) { this._filter = filter.dataset.filter; this._renderEvents(true); return; }
+        const row = event.target.closest?.("[data-media-cam]");
+        if (!row) return;
+        const cam = (this._cameras || []).find((candidate) => candidate.key === row.dataset.mediaCam);
+        const ts = Number(row.dataset.mediaTs);
         if (cam) this._openMediaBrowser(cam, Number.isFinite(ts) ? { ts } : null);
-      }),
-    );
+      });
+    }
     this._hydrateEventThumbs(mount);
   }
 
@@ -642,7 +814,7 @@ class HACameraHubCard extends HTMLElement {
 
     const row = (icon, label, value, warn) => `<div class="row ${warn ? "warn" : ""}"><ha-icon icon="${icon}"></ha-icon><span class="row-label">${label}</span><span class="row-value">${value}</span></div>`;
 
-    mount.innerHTML = `
+    const html = `
       <div class="row-list">
         ${row("mdi:cctv", "Kameraer online", `${online} / ${total}`, online < total)}
         ${row("mdi:harddisk", "Lagerplads brugt", Number.isFinite(storage) ? `${storage.toFixed(1)} %` : "—", storage >= 90)}
@@ -662,8 +834,49 @@ class HACameraHubCard extends HTMLElement {
         <div><b>Åbn UniFi Protect</b><small>Det native UniFi-interface (kræver at ingress-adgang virker på dit setup)</small></div>
       </button>
     `;
-    mount.querySelectorAll("[data-nav]").forEach((el) => el.addEventListener("click", () => this._navigate(el.dataset.nav)));
-    mount.querySelectorAll("[data-media-cam]").forEach((el) => el.addEventListener("click", () => this._openMediaBrowser(null)));
+    this._patchMount(mount, html);
+    if (!mount.dataset.bound) {
+      mount.dataset.bound = "true";
+      mount.addEventListener("click", (event) => {
+        const nav = event.target.closest?.("[data-nav]");
+        if (nav) { this._navigate(nav.dataset.nav); return; }
+        if (event.target.closest?.("[data-media-cam]")) this._openMediaBrowser(null);
+      });
+    }
+  }
+
+  _patchMount(mount, html) {
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    const current = Array.from(mount.childNodes);
+    const next = Array.from(template.content.childNodes);
+    for (let index = current.length - 1; index >= next.length; index -= 1) current[index].remove();
+    for (let index = 0; index < next.length; index += 1) {
+      const existing = mount.childNodes[index];
+      if (!existing) mount.appendChild(next[index].cloneNode(true));
+      else this._morphNode(existing, next[index]);
+    }
+  }
+
+  _morphNode(current, next) {
+    if (current.nodeType !== next.nodeType || current.nodeName !== next.nodeName) {
+      current.replaceWith(next.cloneNode(true)); return;
+    }
+    if (current.nodeType === Node.TEXT_NODE) {
+      if (current.nodeValue !== next.nodeValue) current.nodeValue = next.nodeValue;
+      return;
+    }
+    if (current.nodeType !== Node.ELEMENT_NODE) return;
+    for (const attribute of Array.from(current.attributes)) if (!next.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
+    for (const attribute of Array.from(next.attributes)) if (current.getAttribute(attribute.name) !== attribute.value) current.setAttribute(attribute.name, attribute.value);
+    const currentChildren = Array.from(current.childNodes);
+    const nextChildren = Array.from(next.childNodes);
+    for (let index = currentChildren.length - 1; index >= nextChildren.length; index -= 1) currentChildren[index].remove();
+    for (let index = 0; index < nextChildren.length; index += 1) {
+      const existing = current.childNodes[index];
+      if (!existing) current.appendChild(nextChildren[index].cloneNode(true));
+      else this._morphNode(existing, nextChildren[index]);
+    }
   }
 
   _buildShell() {
@@ -798,7 +1011,9 @@ class HACameraHubCard extends HTMLElement {
 
     this.shadowRoot.querySelectorAll("[data-tab]").forEach((el) =>
       el.addEventListener("click", () => {
+        const previousTab = this._tab;
         this._tab = el.dataset.tab;
+        if (previousTab === "live" && this._tab !== "live") this._suspendLiveFeeds();
         this.shadowRoot.querySelectorAll("[data-tab]").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === this._tab));
         this.shadowRoot.querySelectorAll("[data-panel]").forEach((panel) => {
           panel.hidden = panel.dataset.panel !== this._tab;
