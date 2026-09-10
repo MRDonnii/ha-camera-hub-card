@@ -43,8 +43,11 @@ nvr:
 - **Hændelser** — en kronologisk log over de seneste 36 timers `event.*`
   UniFi Protect-hændelser (person/dyr/køretøj/bevægelse m.m.), med filtre.
   Tryk på en hændelse åbner en indbygget medie-browser (Home Assistants
-  `media_source`-API mod UniFi Protects egen integration) med klip og
-  thumbnails for det pågældende kamera — klippet afspilles direkte i
+  `media_source`-API mod UniFi Protects egen integration), matcher
+  hændelsens tidsstempel mod klippene i kameraets mappe og **starter
+  automatisk afspilning af det nærmeste klip** (inden for ±6 minutter).
+  Kan der ikke findes et sikkert match, lander du i stedet i klip-listen,
+  så du kan vælge det rigtige klip manuelt. Klippet afspilles direkte i
   kortet via et `<video>`-element, uden eksterne afhængigheder. Et lille
   kamera-ikon viser i stedet kameraets nuværende billede (mere-info).
 - **System** — NVR-status: lagerplads, optagekapacitet, CPU, temperatur,
@@ -62,6 +65,13 @@ Ved afspilning kaldes `media_source/resolve_media` for at hente en
 afspilbar URL. Dette kræver at UniFi Protect-integrationen har
 hændelser/klip aktiveret (indstillingen "Max media" på integrationens
 config-side).
+
+## Opsætning i GUI
+
+Kortet har en fuld visuel editor (åbnes via "Rediger" i dashboardeditoren,
+ingen YAML nødvendig): titel/undertitel, ingress-sti, alle NVR-sensorer og
+disk-fejlsensorer via entity-pickere, samt tilføj/fjern/rediger for hvert
+kamera (nøgle, navn, ikon, område, opløsning, AI-detektion, dørklokke).
 
 ## Installation
 

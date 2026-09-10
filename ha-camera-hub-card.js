@@ -1,4 +1,4 @@
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 
 const EVENTS_REFRESH_MS = 2 * 60 * 1000;
 const SYSTEM_TICK_MS = 30 * 1000;
@@ -59,6 +59,10 @@ class HACameraHubCard extends HTMLElement {
         hdd_entities: ["binary_sensor.jt_net_protect_hdd_1", "binary_sensor.jt_net_protect_hdd_2"],
       },
     };
+  }
+
+  static getConfigElement() {
+    return document.createElement("ha-camera-hub-card-editor");
   }
 
   setConfig(config) {
@@ -294,12 +298,41 @@ class HACameraHubCard extends HTMLElement {
     return TYPE_INFO[type] || { label: type, icon: "mdi:bell-outline", cls: "object" };
   }
 
-  async _openMediaBrowser(cam) {
+  _parseMediaTimestamp(title) {
+    if (!title) return NaN;
+    const isoMatch = title.match(/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}/);
+    if (isoMatch) {
+      const iso = new Date(isoMatch[0].replace(" ", "T"));
+      if (!Number.isNaN(iso.getTime())) return iso.getTime();
+    }
+    const direct = new Date(title);
+    return Number.isNaN(direct.getTime()) ? NaN : direct.getTime();
+  }
+
+  _findClosestMediaChild(children, targetTs, toleranceMs = 6 * 60 * 1000) {
+    if (!Number.isFinite(targetTs)) return null;
+    let best = null;
+    let bestDiff = Infinity;
+    for (const child of children) {
+      if (!child.can_play) continue;
+      const ts = this._parseMediaTimestamp(child.title);
+      if (Number.isNaN(ts)) continue;
+      const diff = Math.abs(ts - targetTs);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = child;
+      }
+    }
+    return bestDiff <= toleranceMs ? best : null;
+  }
+
+  async _openMediaBrowser(cam, event) {
     const dialog = this.shadowRoot.querySelector("[data-media-dialog]");
     if (!dialog || !this._hass?.callWS) return;
     this._media = { loading: true, error: null, stack: [{ title: cam?.name || "Hændelser", node: null }], playing: null };
     this._renderMediaDialog();
     if (!dialog.open) dialog.showModal();
+    let targetNode = null;
     try {
       const root = await this._browseMedia("media-source://unifiprotect");
       let cameraNode = this._findMediaChild(root, cam?.name);
@@ -314,7 +347,7 @@ class HACameraHubCard extends HTMLElement {
           }
         }
       }
-      const targetNode = cameraNode ? await this._browseMedia(cameraNode.media_content_id) : root;
+      targetNode = cameraNode ? await this._browseMedia(cameraNode.media_content_id) : root;
       this._media = {
         loading: false,
         error: null,
@@ -324,8 +357,16 @@ class HACameraHubCard extends HTMLElement {
     } catch (error) {
       console.error("HA Camera Hub Card: media browse failed", error);
       this._media = { loading: false, error: "Kunne ikke indlæse hændelser fra Medier.", stack: [{ title: cam?.name || "Hændelser", node: null }], playing: null };
+      this._renderMediaDialog();
+      return;
     }
-    this._renderMediaDialog();
+    const match = event && Array.isArray(targetNode.children) ? this._findClosestMediaChild(targetNode.children, event.ts) : null;
+    if (match) {
+      await this._mediaPlay(match);
+    } else {
+      if (event) this._media.notice = "Kunne ikke finde et præcist match automatisk – vælg klippet herunder.";
+      this._renderMediaDialog();
+    }
   }
 
   async _mediaDrill(child) {
@@ -435,7 +476,7 @@ class HACameraHubCard extends HTMLElement {
       .slice(0, 150)
       .map((e) => {
         const info = this._typeInfo(e.type);
-        return `<div class="event-row" data-media-cam="${this._esc(e.cameraKey)}" title="Se hændelser i Medier">
+        return `<div class="event-row" data-media-cam="${this._esc(e.cameraKey)}" data-media-ts="${e.ts}" title="Afspil hændelse">
           <div class="event-icon ${info.cls}"><ha-icon icon="${info.icon}"></ha-icon></div>
           <div class="event-main">
             <b>${this._esc(e.cameraName)}</b>
@@ -464,7 +505,8 @@ class HACameraHubCard extends HTMLElement {
     mount.querySelectorAll("[data-media-cam]").forEach((el) =>
       el.addEventListener("click", () => {
         const cam = (this._cameras || []).find((c) => c.key === el.dataset.mediaCam);
-        if (cam) this._openMediaBrowser(cam);
+        const ts = Number(el.dataset.mediaTs);
+        if (cam) this._openMediaBrowser(cam, Number.isFinite(ts) ? { ts } : null);
       }),
     );
   }
@@ -677,7 +719,180 @@ class HACameraHubCard extends HTMLElement {
   }
 }
 
+class HACameraHubCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+  }
+
+  setConfig(config) {
+    const stub = HACameraHubCard.getStubConfig();
+    const nextConfig = structuredClone(config || stub);
+    nextConfig.nvr = { ...stub.nvr, ...(nextConfig.nvr || {}) };
+    nextConfig.nvr.hdd_entities ||= [];
+    nextConfig.cameras ||= [];
+    const signature = JSON.stringify(nextConfig);
+    this.config = nextConfig;
+    if (signature === this._configSignature && this.shadowRoot.hasChildNodes()) return;
+    this._configSignature = signature;
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this.shadowRoot.querySelectorAll("ha-entity-picker").forEach((picker) => {
+      picker.hass = hass;
+    });
+  }
+
+  _emit() {
+    this._configSignature = JSON.stringify(this.config);
+    this.dispatchEvent(new CustomEvent("config-changed", { bubbles: true, composed: true, detail: { config: structuredClone(this.config) } }));
+  }
+
+  _esc(v) {
+    return String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  _render() {
+    if (!this.shadowRoot || !this.config) return;
+    const c = this.config;
+    this.shadowRoot.innerHTML = `<style>
+      *{box-sizing:border-box}
+      .editor{display:grid;gap:12px;color:var(--primary-text-color)}
+      .top,.group,.camera{display:grid;gap:8px;padding:12px;border:1px solid var(--divider-color);border-radius:12px}
+      .fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+      label span{display:block;margin-bottom:4px;color:var(--secondary-text-color);font-size:11px}
+      input,select{width:100%;padding:9px;border:1px solid var(--divider-color);border-radius:8px;background:var(--card-background-color);color:inherit;font:inherit}
+      .head{display:flex;justify-content:space-between;align-items:center}
+      .camera{padding:9px}
+      .add,.remove{padding:8px 10px;border:1px solid var(--primary-color);border-radius:8px;background:transparent;color:var(--primary-color);cursor:pointer;font:inherit}
+      .remove{border-color:var(--error-color);color:var(--error-color)}
+      ha-entity-picker{display:block}
+      .hdd-row{display:flex;align-items:center;gap:8px}
+      .hdd-row ha-entity-picker{flex:1}
+      .check{display:flex!important;flex-direction:row-reverse;align-items:center;justify-content:flex-end;gap:8px}
+      .check span{margin:0!important}
+      .check input{width:auto!important}
+      @media(max-width:600px){.fields{grid-template-columns:1fr}}
+    </style>
+    <div class="editor">
+      <div class="top fields">
+        <label><span>Titel</span><input data-root="title" value="${this._esc(c.title)}"></label>
+        <label><span>Undertitel</span><input data-root="subtitle" value="${this._esc(c.subtitle)}"></label>
+        <label><span>UniFi Protect ingress-sti (valgfri)</span><input data-root="protect_ingress_path" value="${this._esc(c.protect_ingress_path)}"></label>
+      </div>
+
+      <section class="group">
+        <div class="head"><b>NVR / systemstatus</b></div>
+        <div class="fields">
+          <label><span>Lagerplads (%)</span><ha-entity-picker data-nvr-picker="storage_entity" value="${this._esc(c.nvr.storage_entity)}" include-domains='["sensor"]' allow-custom-entity></ha-entity-picker></label>
+          <label><span>Optagekapacitet (sekunder)</span><ha-entity-picker data-nvr-picker="capacity_entity" value="${this._esc(c.nvr.capacity_entity)}" include-domains='["sensor"]' allow-custom-entity></ha-entity-picker></label>
+          <label><span>CPU (%)</span><ha-entity-picker data-nvr-picker="cpu_entity" value="${this._esc(c.nvr.cpu_entity)}" include-domains='["sensor"]' allow-custom-entity></ha-entity-picker></label>
+          <label><span>CPU-temperatur</span><ha-entity-picker data-nvr-picker="temp_entity" value="${this._esc(c.nvr.temp_entity)}" include-domains='["sensor"]' allow-custom-entity></ha-entity-picker></label>
+          <label><span>Hukommelse (%)</span><ha-entity-picker data-nvr-picker="memory_entity" value="${this._esc(c.nvr.memory_entity)}" include-domains='["sensor"]' allow-custom-entity></ha-entity-picker></label>
+          <label><span>NVR oppetid</span><ha-entity-picker data-nvr-picker="uptime_entity" value="${this._esc(c.nvr.uptime_entity)}" include-domains='["sensor"]' allow-custom-entity></ha-entity-picker></label>
+        </div>
+        <div class="head"><b>Disk-fejlsensorer</b></div>
+        ${c.nvr.hdd_entities
+          .map(
+            (id, hi) => `<div class="hdd-row"><ha-entity-picker data-hdd-picker="${hi}" value="${this._esc(id)}" include-domains='["binary_sensor"]' allow-custom-entity></ha-entity-picker><button class="remove" data-remove-hdd="${hi}">Fjern</button></div>`,
+          )
+          .join("")}
+        <button class="add" data-add-hdd>+ Tilføj disk-sensor</button>
+      </section>
+
+      ${c.cameras
+        .map(
+          (cam, ci) => `<section class="camera">
+            <div class="head"><b>${this._esc(cam.name || cam.key || `Kamera ${ci + 1}`)}</b><button class="remove" data-remove-camera="${ci}">Fjern kamera</button></div>
+            <div class="fields">
+              <label><span>Nøgle (matcher entity-navn, fx "fordor")</span><input data-camera-field="key" data-camera="${ci}" value="${this._esc(cam.key || "")}"></label>
+              <label><span>Navn</span><input data-camera-field="name" data-camera="${ci}" value="${this._esc(cam.name || "")}"></label>
+              <label><span>Ikon (mdi:...)</span><input data-camera-field="icon" data-camera="${ci}" value="${this._esc(cam.icon || "mdi:cctv")}"></label>
+              <label><span>Område (bruges i hændelses-entity)</span><input data-camera-field="area" data-camera="${ci}" value="${this._esc(cam.area || "")}"></label>
+              <label><span>Live-opløsning</span>
+                <select data-camera-select="res" data-camera="${ci}">
+                  ${["low", "medium", "high"].map((r) => `<option value="${r}" ${(cam.res || "medium") === r ? "selected" : ""}>${r}</option>`).join("")}
+                </select>
+              </label>
+              <label class="check"><span>AI-detektion (person/dyr/køretøj)</span><input type="checkbox" data-camera-check="ai" data-camera="${ci}" ${cam.ai ? "checked" : ""}></label>
+              <label class="check"><span>Dørklokke</span><input type="checkbox" data-camera-check="doorbell" data-camera="${ci}" ${cam.doorbell ? "checked" : ""}></label>
+            </div>
+          </section>`,
+        )
+        .join("")}
+      <button class="add" data-add-camera>+ Tilføj kamera</button>
+    </div>`;
+
+    this.shadowRoot.querySelectorAll("input[data-root]").forEach((input) =>
+      input.addEventListener("change", () => {
+        this.config[input.dataset.root] = input.value;
+        this._emit();
+      }),
+    );
+    this.shadowRoot.querySelectorAll("ha-entity-picker[data-nvr-picker]").forEach((picker) => {
+      picker.hass = this._hass;
+      picker.addEventListener("value-changed", (event) => {
+        this.config.nvr[picker.dataset.nvrPicker] = event.detail.value;
+        this._emit();
+      });
+    });
+    this.shadowRoot.querySelectorAll("ha-entity-picker[data-hdd-picker]").forEach((picker) => {
+      picker.hass = this._hass;
+      picker.addEventListener("value-changed", (event) => {
+        this.config.nvr.hdd_entities[Number(picker.dataset.hddPicker)] = event.detail.value;
+        this._emit();
+      });
+    });
+    this.shadowRoot.querySelector("[data-add-hdd]")?.addEventListener("click", () => {
+      this.config.nvr.hdd_entities.push("");
+      this._emit();
+      this._render();
+    });
+    this.shadowRoot.querySelectorAll("[data-remove-hdd]").forEach((button) =>
+      button.addEventListener("click", () => {
+        this.config.nvr.hdd_entities.splice(Number(button.dataset.removeHdd), 1);
+        this._emit();
+        this._render();
+      }),
+    );
+    this.shadowRoot.querySelectorAll("input[data-camera-field]").forEach((input) =>
+      input.addEventListener("change", () => {
+        this.config.cameras[Number(input.dataset.camera)][input.dataset.cameraField] = input.value;
+        this._emit();
+        if (input.dataset.cameraField === "name" || input.dataset.cameraField === "key") this._render();
+      }),
+    );
+    this.shadowRoot.querySelectorAll("select[data-camera-select]").forEach((select) =>
+      select.addEventListener("change", () => {
+        this.config.cameras[Number(select.dataset.camera)][select.dataset.cameraSelect] = select.value;
+        this._emit();
+      }),
+    );
+    this.shadowRoot.querySelectorAll("input[data-camera-check]").forEach((input) =>
+      input.addEventListener("change", () => {
+        this.config.cameras[Number(input.dataset.camera)][input.dataset.cameraCheck] = input.checked;
+        this._emit();
+      }),
+    );
+    this.shadowRoot.querySelector("[data-add-camera]")?.addEventListener("click", () => {
+      this.config.cameras.push({ key: "", name: "Nyt kamera", icon: "mdi:cctv", area: "udenfor", ai: true, res: "medium" });
+      this._emit();
+      this._render();
+    });
+    this.shadowRoot.querySelectorAll("[data-remove-camera]").forEach((button) =>
+      button.addEventListener("click", () => {
+        this.config.cameras.splice(Number(button.dataset.removeCamera), 1);
+        this._emit();
+        this._render();
+      }),
+    );
+  }
+}
+
 if (!customElements.get("ha-camera-hub-card")) customElements.define("ha-camera-hub-card", HACameraHubCard);
+if (!customElements.get("ha-camera-hub-card-editor")) customElements.define("ha-camera-hub-card-editor", HACameraHubCardEditor);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "ha-camera-hub-card",
