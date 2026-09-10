@@ -1,4 +1,4 @@
-const VERSION = "0.4.3";
+const VERSION = "0.5.0";
 
 const EVENTS_REFRESH_MS = 30 * 1000;
 const SYSTEM_TICK_MS = 30 * 1000;
@@ -525,6 +525,7 @@ class HACameraHubCard extends HTMLElement {
       .map((e) => {
         const info = this._typeInfo(e.type);
         return `<div class="event-row" data-media-cam="${this._esc(e.cameraKey)}" data-media-ts="${e.ts}" title="Afspil hændelse">
+          <div class="event-thumb" data-thumb-key="${this._esc(e.cameraKey)}" data-thumb-ts="${e.ts}"><ha-icon icon="mdi:cctv"></ha-icon></div>
           <div class="event-icon ${info.cls}"><ha-icon icon="${info.icon}"></ha-icon></div>
           <div class="event-main">
             <b>${this._esc(e.cameraName)}</b>
@@ -534,6 +535,70 @@ class HACameraHubCard extends HTMLElement {
         </div>`;
       })
       .join("")}</div>`;
+  }
+
+  async _ensureCamThumbs(camKey) {
+    const now = Date.now();
+    this._camThumbs ||= {};
+    const cached = this._camThumbs[camKey];
+    if (cached && now - cached.fetchedAt < 3 * 60 * 1000) return cached.items;
+    const cam = (this._cameras || []).find((c) => c.key === camKey);
+    if (!cam || !this._hass?.callWS) return cached?.items || [];
+    try {
+      const root = await this._browseMedia("media-source://unifiprotect");
+      let cameraNode = this._findMediaChild(root, cam.name);
+      if (!cameraNode && Array.isArray(root.children)) {
+        for (const child of root.children) {
+          if (!child.can_expand) continue;
+          const sub = await this._browseMedia(child.media_content_id);
+          const found = this._findMediaChild(sub, cam.name);
+          if (found) {
+            cameraNode = found;
+            break;
+          }
+        }
+      }
+      if (!cameraNode) return cached?.items || [];
+      const camNode = await this._browseMedia(cameraNode.media_content_id);
+      const playable = await this._resolvePlayableNode(camNode);
+      const items = (playable.children || [])
+        .filter((child) => child.can_play && child.thumbnail)
+        .map((child) => ({ ts: this._parseMediaTimestamp(child.title), thumbnail: this._mediaUrl(child.thumbnail) }))
+        .filter((item) => Number.isFinite(item.ts));
+      this._camThumbs[camKey] = { fetchedAt: now, items };
+      return items;
+    } catch (error) {
+      return cached?.items || [];
+    }
+  }
+
+  _closestThumbUrl(items, targetTs, toleranceMs = 90 * 1000) {
+    let best = null;
+    let bestDiff = Infinity;
+    for (const item of items) {
+      const diff = Math.abs(item.ts - targetTs);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = item;
+      }
+    }
+    return bestDiff <= toleranceMs ? best?.thumbnail : null;
+  }
+
+  async _hydrateEventThumbs(mount) {
+    const nodes = Array.from(mount.querySelectorAll("[data-thumb-key]"));
+    const keys = [...new Set(nodes.map((node) => node.dataset.thumbKey))];
+    for (const key of keys) {
+      const items = await this._ensureCamThumbs(key);
+      if (!items.length || !mount.isConnected) continue;
+      nodes
+        .filter((node) => node.dataset.thumbKey === key)
+        .forEach((node) => {
+          const ts = Number(node.dataset.thumbTs);
+          const url = this._closestThumbUrl(items, ts);
+          if (url && node.isConnected) node.innerHTML = `<img src="${this._esc(url)}" alt="">`;
+        });
+    }
   }
 
   _renderEvents() {
@@ -557,6 +622,7 @@ class HACameraHubCard extends HTMLElement {
         if (cam) this._openMediaBrowser(cam, Number.isFinite(ts) ? { ts } : null);
       }),
     );
+    this._hydrateEventThumbs(mount);
   }
 
   _renderSystem() {
@@ -653,7 +719,11 @@ class HACameraHubCard extends HTMLElement {
       .event-list{display:flex;flex-direction:column;gap:1px;border:1px solid var(--edge);border-radius:14px;overflow:hidden;max-height:520px;overflow-y:auto}
       .event-row{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--card-background-color);cursor:pointer}
       .event-row+.event-row{border-top:1px solid var(--edge)}
-      .event-icon{width:34px;height:34px;border-radius:11px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;background:color-mix(in srgb,var(--muted) 16%,transparent);color:var(--muted)}
+      .event-thumb{width:44px;height:44px;border-radius:11px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;overflow:hidden;background:color-mix(in srgb,var(--muted) 14%,transparent);color:var(--muted)}
+      .event-thumb ha-icon{--mdc-icon-size:18px}
+      .event-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+      .event-icon{width:26px;height:26px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;background:color-mix(in srgb,var(--muted) 16%,transparent);color:var(--muted)}
+      .event-icon ha-icon{--mdc-icon-size:14px}
       .event-icon.person{background:color-mix(in srgb,var(--danger) 16%,transparent);color:var(--danger)}
       .event-icon.animal{background:color-mix(in srgb,var(--animal) 16%,transparent);color:var(--animal)}
       .event-icon.vehicle{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)}
@@ -733,7 +803,10 @@ class HACameraHubCard extends HTMLElement {
         this.shadowRoot.querySelectorAll("[data-panel]").forEach((panel) => {
           panel.hidden = panel.dataset.panel !== this._tab;
         });
-        if (this._tab === "events") this._renderEvents();
+        if (this._tab === "events") {
+          this._renderEvents();
+          this._fetchEvents();
+        }
         if (this._tab === "system") this._renderSystem();
         if (this._tab === "live") this._updateLiveTiles();
       }),

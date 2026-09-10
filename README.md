@@ -41,15 +41,27 @@ nvr:
   bevægelse) ud fra kameraets binary_sensor-detektorer, og tryk åbner
   mere-info for kameraet.
 - **Hændelser** — en kronologisk log over de seneste 36 timers `event.*`
-  UniFi Protect-hændelser (person/dyr/køretøj/bevægelse m.m.), med filtre.
-  Tryk på en hændelse åbner en indbygget medie-browser (Home Assistants
-  `media_source`-API mod UniFi Protects egen integration), matcher
-  hændelsens tidsstempel mod klippene i kameraets mappe og **starter
-  automatisk afspilning af det nærmeste klip** (inden for ±6 minutter).
-  Kan der ikke findes et sikkert match, lander du i stedet i klip-listen,
-  så du kan vælge det rigtige klip manuelt. Klippet afspilles direkte i
-  kortet via et `<video>`-element, uden eksterne afhængigheder. Et lille
-  kamera-ikon viser i stedet kameraets nuværende billede (mere-info).
+  UniFi Protect-hændelser (person/dyr/køretøj/bevægelse m.m.), med filtre
+  og et lille thumbnail pr. hændelse (hentet fra UniFi Protects eget
+  klip-bibliotek, matchet på tidsstempel, cachet pr. kamera i 3 minutter).
+  Listen opdateres hvert 30. sekund i baggrunden og altid med det samme,
+  når du skifter til fanen. Tryk på en hændelse åbner en indbygget
+  medie-browser (Home Assistants `media_source`-API mod UniFi Protects
+  egen integration), matcher hændelsens tidsstempel mod klippene i
+  kameraets mappe og **starter automatisk afspilning af det nærmeste
+  klip** (inden for ±90 sekunder). Kan der ikke findes et sikkert match,
+  lander du i stedet i klip-listen, så du kan vælge det rigtige klip
+  manuelt — dialogen har også en opdater-knap. Klippet afspilles direkte
+  i kortet via et `<video>`-element, uden eksterne afhængigheder. Et
+  lille kamera-ikon viser i stedet kameraets nuværende billede (mere-info).
+
+  **Vigtigt om UniFi Protects "Max media"-indstilling:** integrationens
+  medie-browser henter events med et loft (`max_media`, standard 1000)
+  på tværs af *alle* kameraer i det browsede tidsvindue. Med mange
+  aktive AI-kameraer kan loftet nås langt inden døgnet er omme, hvorefter
+  hverken denne funktion eller Home Assistants egen medie-browser viser
+  nyere hændelser. Sæt `max_media` op (op til 10000) under UniFi Protect
+  → Konfigurér i Home Assistant, hvis hændelser ser ud til at mangle.
 - **System** — NVR-status: lagerplads, optagekapacitet, CPU, temperatur,
   hukommelse, oppetid og diskfejl, samt en knap til at gennemse alle
   kameraers hændelser i Medier, og en valgfri knap til UniFi Protects
