@@ -1,4 +1,4 @@
-const VERSION = "0.2.1";
+const VERSION = "0.3.0";
 
 const EVENTS_REFRESH_MS = 2 * 60 * 1000;
 const SYSTEM_TICK_MS = 30 * 1000;
@@ -38,6 +38,7 @@ class HACameraHubCard extends HTMLElement {
     this._events = [];
     this._eventsFetchedAt = 0;
     this._eventsFetching = false;
+    this._media = null;
   }
 
   static getStubConfig() {
@@ -126,10 +127,24 @@ class HACameraHubCard extends HTMLElement {
   }
   _navigate(path) {
     if (!path) return;
-    // Ingress-panelet ("/hassio/ingress/...") er ikke en del af Lovelace-SPA'en,
-    // så en almindelig pushState+location-changed bliver ikke genkendt af
-    // routeren og ender på forsiden. En rigtig navigation virker altid.
-    window.location.assign(path);
+    history.pushState(null, "", path);
+    window.dispatchEvent(new CustomEvent("location-changed", { bubbles: true, composed: true }));
+  }
+  _mediaUrl(url) {
+    if (!url) return "";
+    return /^https?:\/\//i.test(url) ? url : this._hass.hassUrl(url);
+  }
+  _browseMedia(contentId) {
+    return this._hass.callWS({ type: "media_source/browse_media", media_content_id: contentId });
+  }
+  _resolveMedia(contentId) {
+    return this._hass.callWS({ type: "media_source/resolve_media", media_content_id: contentId });
+  }
+  _findMediaChild(node, name) {
+    if (!name || !Array.isArray(node?.children)) return null;
+    const norm = (s) => String(s || "").toLowerCase().trim();
+    const target = norm(name);
+    return node.children.find((child) => norm(child.title) === target) || node.children.find((child) => norm(child.title).includes(target)) || null;
   }
   _ago(iso) {
     const ms = Date.now() - new Date(iso).getTime();
@@ -279,6 +294,139 @@ class HACameraHubCard extends HTMLElement {
     return TYPE_INFO[type] || { label: type, icon: "mdi:bell-outline", cls: "object" };
   }
 
+  async _openMediaBrowser(cam) {
+    const dialog = this.shadowRoot.querySelector("[data-media-dialog]");
+    if (!dialog || !this._hass?.callWS) return;
+    this._media = { loading: true, error: null, stack: [{ title: cam?.name || "Hændelser", node: null }], playing: null };
+    this._renderMediaDialog();
+    if (!dialog.open) dialog.showModal();
+    try {
+      const root = await this._browseMedia("media-source://unifiprotect");
+      let cameraNode = this._findMediaChild(root, cam?.name);
+      if (!cameraNode && Array.isArray(root.children)) {
+        for (const child of root.children) {
+          if (!child.can_expand) continue;
+          const sub = await this._browseMedia(child.media_content_id);
+          const found = this._findMediaChild(sub, cam?.name);
+          if (found) {
+            cameraNode = found;
+            break;
+          }
+        }
+      }
+      const targetNode = cameraNode ? await this._browseMedia(cameraNode.media_content_id) : root;
+      this._media = {
+        loading: false,
+        error: null,
+        stack: [{ title: cameraNode ? cam?.name || cameraNode.title : "Hændelser (alle kameraer)", node: targetNode }],
+        playing: null,
+      };
+    } catch (error) {
+      console.error("HA Camera Hub Card: media browse failed", error);
+      this._media = { loading: false, error: "Kunne ikke indlæse hændelser fra Medier.", stack: [{ title: cam?.name || "Hændelser", node: null }], playing: null };
+    }
+    this._renderMediaDialog();
+  }
+
+  async _mediaDrill(child) {
+    if (!this._media) return;
+    this._media.loading = true;
+    this._renderMediaDialog();
+    try {
+      const node = await this._browseMedia(child.media_content_id);
+      this._media.stack.push({ title: child.title, node });
+      this._media.loading = false;
+    } catch (error) {
+      this._media.loading = false;
+      this._media.error = "Mappen kunne ikke åbnes.";
+    }
+    this._renderMediaDialog();
+  }
+
+  _mediaBack() {
+    if (!this._media) return;
+    if (this._media.playing) {
+      this._media.playing = null;
+      this._renderMediaDialog();
+      return;
+    }
+    if (this._media.stack.length > 1) this._media.stack.pop();
+    this._renderMediaDialog();
+  }
+
+  async _mediaPlay(child) {
+    if (!this._media) return;
+    this._media.loading = true;
+    this._renderMediaDialog();
+    try {
+      const resolved = await this._resolveMedia(child.media_content_id);
+      this._media.playing = { url: this._mediaUrl(resolved.url), mime: resolved.mime_type, title: child.title };
+      this._media.loading = false;
+    } catch (error) {
+      this._media.loading = false;
+      this._media.error = "Klippet kunne ikke afspilles.";
+    }
+    this._renderMediaDialog();
+  }
+
+  _closeMediaDialog() {
+    this.shadowRoot.querySelector("[data-media-dialog]")?.close();
+    this._media = null;
+  }
+
+  _renderMediaDialog() {
+    const dialog = this.shadowRoot.querySelector("[data-media-dialog]");
+    const body = this.shadowRoot.querySelector("[data-media-body]");
+    const titleEl = this.shadowRoot.querySelector("[data-media-title]");
+    const backBtn = this.shadowRoot.querySelector("[data-media-back]");
+    if (!dialog || !body || !titleEl || !backBtn || !this._media) return;
+    const top = this._media.stack[this._media.stack.length - 1];
+    titleEl.textContent = this._media.playing ? this._media.playing.title : top?.title || "Hændelser";
+    backBtn.hidden = this._media.stack.length <= 1 && !this._media.playing;
+
+    if (this._media.loading) {
+      body.innerHTML = `<div class="media-loading">Indlæser…</div>`;
+      return;
+    }
+    if (this._media.error) {
+      body.innerHTML = `<div class="media-error">${this._esc(this._media.error)}</div>`;
+      return;
+    }
+    if (this._media.playing) {
+      const isVideo = (this._media.playing.mime || "").startsWith("video");
+      body.innerHTML = `<div class="media-player">${
+        isVideo
+          ? `<video src="${this._esc(this._media.playing.url)}" controls autoplay playsinline></video>`
+          : `<img src="${this._esc(this._media.playing.url)}" alt="${this._esc(this._media.playing.title)}" style="width:100%;border-radius:12px">`
+      }</div>`;
+      return;
+    }
+    const children = top?.node?.children || [];
+    if (!children.length) {
+      body.innerHTML = `<div class="media-loading">Ingen hændelser fundet her.</div>`;
+      return;
+    }
+    body.innerHTML = `<div class="media-grid">${children
+      .map(
+        (child, i) => `<button class="media-item" data-media-child="${i}">
+          <div class="media-thumb">${
+            child.thumbnail
+              ? `<img src="${this._esc(this._mediaUrl(child.thumbnail))}" alt="">`
+              : `<ha-icon icon="${child.can_expand ? "mdi:folder-outline" : "mdi:play-circle-outline"}"></ha-icon>`
+          }${child.can_play ? `<div class="play-badge"><ha-icon icon="mdi:play-circle"></ha-icon></div>` : ""}</div>
+          <span>${this._esc(child.title)}</span>
+        </button>`,
+      )
+      .join("")}</div>`;
+    body.querySelectorAll("[data-media-child]").forEach((btn) => {
+      const child = children[Number(btn.dataset.mediaChild)];
+      btn.addEventListener("click", () => {
+        if (child.can_play) this._mediaPlay(child);
+        else if (child.can_expand) this._mediaDrill(child);
+      });
+    });
+  }
+
   _eventsHtml() {
     if (!this._events.length) return `<div class="empty">Ingen hændelser fundet de seneste ${EVENTS_WINDOW_HOURS} timer</div>`;
     const filtered = this._filter === "all" ? this._events : this._events.filter((e) => this._typeInfo(e.type).cls === this._filter);
@@ -287,7 +435,7 @@ class HACameraHubCard extends HTMLElement {
       .slice(0, 150)
       .map((e) => {
         const info = this._typeInfo(e.type);
-        return `<div class="event-row" data-nav="${this._esc(this._config.protect_ingress_path)}" title="Åbn i UniFi Protect">
+        return `<div class="event-row" data-media-cam="${this._esc(e.cameraKey)}" title="Se hændelser i Medier">
           <div class="event-icon ${info.cls}"><ha-icon icon="${info.icon}"></ha-icon></div>
           <div class="event-main">
             <b>${this._esc(e.cameraName)}</b>
@@ -313,6 +461,12 @@ class HACameraHubCard extends HTMLElement {
     );
     mount.querySelectorAll("[data-more]").forEach((el) => el.addEventListener("click", () => this._more(el.dataset.more)));
     mount.querySelectorAll("[data-nav]").forEach((el) => el.addEventListener("click", () => this._navigate(el.dataset.nav)));
+    mount.querySelectorAll("[data-media-cam]").forEach((el) =>
+      el.addEventListener("click", () => {
+        const cam = (this._cameras || []).find((c) => c.key === el.dataset.mediaCam);
+        if (cam) this._openMediaBrowser(cam);
+      }),
+    );
   }
 
   _renderSystem() {
@@ -343,12 +497,17 @@ class HACameraHubCard extends HTMLElement {
         ${row("mdi:timer-outline", "NVR oppetid", uptime || "—", false)}
         ${row("mdi:harddisk-plus", "Disk-fejl", hddIssues > 0 ? `${hddIssues} disk(e)` : "Ingen", hddIssues > 0)}
       </div>
+      <button class="protect-btn" data-media-cam="">
+        <ha-icon icon="mdi:play-box-multiple-outline"></ha-icon>
+        <div><b>Gennemse hændelser i Medier</b><small>Alle kameraers klip via Home Assistants indbyggede medieafspiller</small></div>
+      </button>
       <button class="protect-btn" data-nav="${this._esc(this._config.protect_ingress_path)}">
         <ha-icon icon="mdi:open-in-new"></ha-icon>
-        <div><b>Åbn UniFi Protect</b><small>Det native UniFi-interface, med fuld klip-historik og afspilning</small></div>
+        <div><b>Åbn UniFi Protect</b><small>Det native UniFi-interface (kræver at ingress-adgang virker på dit setup)</small></div>
       </button>
     `;
     mount.querySelectorAll("[data-nav]").forEach((el) => el.addEventListener("click", () => this._navigate(el.dataset.nav)));
+    mount.querySelectorAll("[data-media-cam]").forEach((el) => el.addEventListener("click", () => this._openMediaBrowser(null)));
   }
 
   _buildShell() {
@@ -426,6 +585,25 @@ class HACameraHubCard extends HTMLElement {
       .protect-btn{display:flex;align-items:center;gap:10px;width:100%;margin-top:14px;padding:13px 14px;border-radius:15px;border:1px solid var(--edge);background:transparent;color:var(--primary-text-color);cursor:pointer;text-align:left}
       .protect-btn ha-icon{--mdc-icon-size:20px;color:var(--accent)}
       .protect-btn small{display:block;color:var(--secondary-text-color);font-size:11px;margin-top:2px}
+      .protect-btn+.protect-btn{margin-top:8px}
+      dialog[data-media-dialog]{width:min(94vw,560px);max-height:82vh;margin:auto;border:1px solid var(--edge);border-radius:18px;padding:0;background:var(--card-background-color);color:var(--primary-text-color);box-shadow:0 18px 50px rgba(0,0,0,.35)}
+      dialog[data-media-dialog]::backdrop{background:rgba(0,0,0,.5);backdrop-filter:blur(2px)}
+      .sheet-head{display:flex;align-items:center;gap:8px;padding:13px 14px;border-bottom:1px solid var(--edge)}
+      .sheet-head b{flex:1;font-size:14px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .sheet-head button{display:grid;place-items:center;flex:0 0 auto;width:32px;height:32px;border:0;border-radius:50%;background:color-mix(in srgb,var(--card-background-color) 85%,var(--primary-text-color) 15%);color:var(--primary-text-color);cursor:pointer}
+      .sheet-head button ha-icon{--mdc-icon-size:18px}
+      .sheet-head [data-media-back][hidden]{visibility:hidden}
+      .media-body{padding:12px 14px 16px;overflow-y:auto;max-height:calc(82vh - 58px)}
+      .media-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}
+      .media-item{border:1px solid var(--edge);border-radius:12px;overflow:hidden;cursor:pointer;background:var(--card-background-color);text-align:left;padding:0;color:inherit;font:inherit}
+      .media-thumb{position:relative;aspect-ratio:16/9;background:#05080d;display:flex;align-items:center;justify-content:center;color:var(--muted)}
+      .media-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+      .media-thumb ha-icon{--mdc-icon-size:28px}
+      .media-thumb .play-badge{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.18);color:#fff}
+      .media-item span{display:block;padding:6px 8px;font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .media-player video{width:100%;border-radius:12px;background:#000;display:block}
+      .media-loading,.media-error{padding:30px 10px;text-align:center;color:var(--secondary-text-color);font-size:12.5px}
+      .media-error{color:var(--danger)}
       @media(max-width:600px){.tab span{display:none}.tab{padding:10px 4px}}
     </style>
     <ha-card>
@@ -447,7 +625,15 @@ class HACameraHubCard extends HTMLElement {
         .join("")}</div></div>
       <div class="panel" data-panel="events" ${this._tab === "events" ? "" : "hidden"}><div data-events-mount></div></div>
       <div class="panel" data-panel="system" ${this._tab === "system" ? "" : "hidden"}><div data-system-mount></div></div>
-    </ha-card>`;
+    </ha-card>
+    <dialog data-media-dialog>
+      <div class="sheet-head">
+        <button data-media-back hidden title="Tilbage"><ha-icon icon="mdi:arrow-left"></ha-icon></button>
+        <b data-media-title>Hændelser</b>
+        <button data-media-close aria-label="Luk"><ha-icon icon="mdi:close"></ha-icon></button>
+      </div>
+      <div class="media-body" data-media-body></div>
+    </dialog>`;
 
     this.shadowRoot.querySelectorAll("[data-tab]").forEach((el) =>
       el.addEventListener("click", () => {
@@ -468,6 +654,16 @@ class HACameraHubCard extends HTMLElement {
         if (cam) this._more(cam.camera_entity);
       }),
     );
+
+    const mediaDialog = this.shadowRoot.querySelector("[data-media-dialog]");
+    this.shadowRoot.querySelector("[data-media-close]")?.addEventListener("click", () => this._closeMediaDialog());
+    this.shadowRoot.querySelector("[data-media-back]")?.addEventListener("click", () => this._mediaBack());
+    mediaDialog?.addEventListener("click", (event) => {
+      if (event.target === mediaDialog) this._closeMediaDialog();
+    });
+    mediaDialog?.addEventListener("close", () => {
+      this._media = null;
+    });
 
     if (this._hass) {
       this._updateLiveTiles();

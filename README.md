@@ -41,19 +41,27 @@ nvr:
   bevægelse) ud fra kameraets binary_sensor-detektorer, og tryk åbner
   mere-info for kameraet.
 - **Hændelser** — en kronologisk log over de seneste 36 timers `event.*`
-  UniFi Protect-hændelser (person/dyr/køretøj/bevægelse m.m.), med filtre
-  og genvej til mere-info samt "Åbn i UniFi Protect".
+  UniFi Protect-hændelser (person/dyr/køretøj/bevægelse m.m.), med filtre.
+  Tryk på en hændelse åbner en indbygget medie-browser (Home Assistants
+  `media_source`-API mod UniFi Protects egen integration) med klip og
+  thumbnails for det pågældende kamera — klippet afspilles direkte i
+  kortet via et `<video>`-element, uden eksterne afhængigheder. Et lille
+  kamera-ikon viser i stedet kameraets nuværende billede (mere-info).
 - **System** — NVR-status: lagerplads, optagekapacitet, CPU, temperatur,
-  hukommelse, oppetid og diskfejl, samt en knap til at åbne den native
-  UniFi Protect-app via ingress.
+  hukommelse, oppetid og diskfejl, samt en knap til at gennemse alle
+  kameraers hændelser i Medier, og en valgfri knap til UniFi Protects
+  native web-UI via ingress (kræver at ingress-adgang virker på dit
+  setup — visse reverse proxy-opsætninger blokerer `/hassio/ingress/...`).
 
-### Vigtig begrænsning
+### Sådan virker klip-afspilningen
 
-Home Assistants indbyggede live-visning giver kun *live* video — ikke
-klip, snapshots eller en tidslinje. Derfor bruger Hændelser-fanen en
-selvbygget kronologisk log frem for klip-afspilning i kortet — reelle
-videoklip skal stadig ses i den native UniFi Protect-app (linket findes i
-både Hændelser- og System-fanen).
+Kortet browser `media-source://unifiprotect` via
+`hass.callWS({type: "media_source/browse_media", ...})`, finder kameraets
+mappe ud fra navnet, og lader dig klikke dig ned til et konkret klip.
+Ved afspilning kaldes `media_source/resolve_media` for at hente en
+afspilbar URL. Dette kræver at UniFi Protect-integrationen har
+hændelser/klip aktiveret (indstillingen "Max media" på integrationens
+config-side).
 
 ## Installation
 
