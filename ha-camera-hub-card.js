@@ -1,4 +1,4 @@
-const VERSION = "0.5.6";
+const VERSION = "0.6.0";
 
 const EVENTS_REFRESH_MS = 30 * 1000;
 const SYSTEM_TICK_MS = 30 * 1000;
@@ -623,7 +623,7 @@ class HACameraHubCard extends HTMLElement {
       .slice(0, 150)
       .map((e) => {
         const info = this._typeInfo(e.type);
-        return `<div class="event-row" data-media-cam="${this._esc(e.cameraKey)}" data-media-ts="${e.ts}" title="Afspil hændelse">
+        return `<div class="event-row ${info.cls}" data-media-cam="${this._esc(e.cameraKey)}" data-media-ts="${e.ts}" title="Afspil hændelse">
           <div class="event-thumb" data-thumb-key="${this._esc(e.cameraKey)}" data-thumb-ts="${e.ts}" data-event-id="${this._esc(e.eventId || "")}"><ha-icon icon="mdi:cctv"></ha-icon></div>
           <div class="event-icon ${info.cls}"><ha-icon icon="${info.icon}"></ha-icon></div>
           <div class="event-main">
@@ -902,12 +902,12 @@ class HACameraHubCard extends HTMLElement {
       .panel[hidden]{display:none}
       .empty{padding:34px 16px;text-align:center;color:var(--secondary-text-color);font-size:12.5px}
       .live-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
-      .cam-tile{border:1px solid var(--edge);border-radius:14px;overflow:hidden;background:var(--card-surface)}
-      .cam-tile.person{border-color:color-mix(in srgb,var(--danger) 55%,var(--edge))}
-      .cam-tile.animal{border-color:color-mix(in srgb,var(--animal) 55%,var(--edge))}
-      .cam-tile.vehicle{border-color:color-mix(in srgb,var(--accent) 55%,var(--edge))}
-      .cam-tile.object{border-color:color-mix(in srgb,var(--object) 55%,var(--edge))}
-      .cam-tile.motion{border-color:color-mix(in srgb,var(--motion) 55%,var(--edge))}
+      .cam-tile{position:relative;border:1px solid color-mix(in srgb,var(--good) 18%,transparent);border-left:4px solid var(--good);border-radius:14px;overflow:hidden;background:linear-gradient(145deg,color-mix(in srgb,var(--good) 6%,transparent),transparent 55%),var(--card-surface);box-shadow:0 6px 16px rgba(0,0,0,.12);transition:border-color .25s ease,background .25s ease}
+      .cam-tile.person{border-color:color-mix(in srgb,var(--danger) 30%,transparent);border-left-color:var(--danger);background:linear-gradient(145deg,color-mix(in srgb,var(--danger) 10%,transparent),transparent 55%),var(--card-surface)}
+      .cam-tile.animal{border-color:color-mix(in srgb,var(--animal) 30%,transparent);border-left-color:var(--animal);background:linear-gradient(145deg,color-mix(in srgb,var(--animal) 10%,transparent),transparent 55%),var(--card-surface)}
+      .cam-tile.vehicle{border-color:color-mix(in srgb,var(--accent) 30%,transparent);border-left-color:var(--accent);background:linear-gradient(145deg,color-mix(in srgb,var(--accent) 10%,transparent),transparent 55%),var(--card-surface)}
+      .cam-tile.object{border-color:color-mix(in srgb,var(--object) 30%,transparent);border-left-color:var(--object);background:linear-gradient(145deg,color-mix(in srgb,var(--object) 10%,transparent),transparent 55%),var(--card-surface)}
+      .cam-tile.motion{border-color:color-mix(in srgb,var(--motion) 30%,transparent);border-left-color:var(--motion);background:linear-gradient(145deg,color-mix(in srgb,var(--motion) 10%,transparent),transparent 55%),var(--card-surface)}
       .cam-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px}
       .cam-bar b{font-size:12px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
       .cam-badge{display:flex;align-items:center;gap:4px;flex:0 0 auto;font-size:10px;font-weight:800;color:var(--good)}
@@ -929,9 +929,13 @@ class HACameraHubCard extends HTMLElement {
       .filter-chip{flex:0 0 auto;display:flex;align-items:center;gap:5px;padding:7px 12px;border-radius:999px;border:1px solid var(--edge);background:transparent;color:var(--secondary-text-color);font-size:11.5px;font-weight:700;cursor:pointer;white-space:nowrap}
       .filter-chip ha-icon{--mdc-icon-size:14px}
       .filter-chip.active{color:#fff;background:var(--accent);border-color:var(--accent)}
-      .event-list{display:flex;flex-direction:column;gap:1px;border:1px solid var(--edge);border-radius:14px;overflow:hidden;max-height:520px;overflow-y:auto}
-      .event-row{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--card-surface);cursor:pointer}
-      .event-row+.event-row{border-top:1px solid var(--edge)}
+      .event-list{display:flex;flex-direction:column;gap:8px;max-height:520px;overflow-y:auto;padding:2px}
+      .event-row{position:relative;display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid color-mix(in srgb,var(--muted) 16%,transparent);border-left:3px solid var(--muted);border-radius:12px;background:linear-gradient(145deg,color-mix(in srgb,var(--muted) 6%,transparent),transparent 60%),var(--card-surface);box-shadow:0 4px 12px rgba(0,0,0,.1);cursor:pointer}
+      .event-row.person{border-color:color-mix(in srgb,var(--danger) 28%,transparent);border-left-color:var(--danger);background:linear-gradient(145deg,color-mix(in srgb,var(--danger) 9%,transparent),transparent 60%),var(--card-surface)}
+      .event-row.animal{border-color:color-mix(in srgb,var(--animal) 28%,transparent);border-left-color:var(--animal);background:linear-gradient(145deg,color-mix(in srgb,var(--animal) 9%,transparent),transparent 60%),var(--card-surface)}
+      .event-row.vehicle{border-color:color-mix(in srgb,var(--accent) 28%,transparent);border-left-color:var(--accent);background:linear-gradient(145deg,color-mix(in srgb,var(--accent) 9%,transparent),transparent 60%),var(--card-surface)}
+      .event-row.object{border-color:color-mix(in srgb,var(--object) 28%,transparent);border-left-color:var(--object);background:linear-gradient(145deg,color-mix(in srgb,var(--object) 9%,transparent),transparent 60%),var(--card-surface)}
+      .event-row.motion{border-color:color-mix(in srgb,var(--motion) 28%,transparent);border-left-color:var(--motion);background:linear-gradient(145deg,color-mix(in srgb,var(--motion) 9%,transparent),transparent 60%),var(--card-surface)}
       .event-thumb{width:44px;height:44px;border-radius:11px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;overflow:hidden;background:color-mix(in srgb,var(--muted) 14%,transparent);color:var(--muted)}
       .event-thumb ha-icon{--mdc-icon-size:18px}
       .event-thumb img{width:100%;height:100%;object-fit:cover;display:block}
@@ -947,9 +951,9 @@ class HACameraHubCard extends HTMLElement {
       .event-main span{display:block;margin-top:2px;font-size:11px;color:var(--secondary-text-color);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
       .event-open{flex:0 0 auto;width:32px;height:32px;border-radius:10px;border:1px solid var(--edge);background:transparent;color:var(--accent);cursor:pointer;display:flex;align-items:center;justify-content:center}
       .event-open ha-icon{--mdc-icon-size:16px}
-      .row-list{display:flex;flex-direction:column;gap:1px;border:1px solid var(--edge);border-radius:14px;overflow:hidden}
-      .row{display:flex;align-items:center;gap:10px;padding:11px 13px;background:var(--card-surface)}
-      .row+.row{border-top:1px solid var(--edge)}
+      .row-list{display:flex;flex-direction:column;gap:8px}
+      .row{position:relative;display:flex;align-items:center;gap:10px;padding:11px 13px;border:1px solid color-mix(in srgb,var(--accent) 16%,transparent);border-left:3px solid var(--accent);border-radius:12px;background:linear-gradient(145deg,color-mix(in srgb,var(--accent) 6%,transparent),transparent 60%),var(--card-surface);box-shadow:0 4px 12px rgba(0,0,0,.1)}
+      .row.warn{border-color:color-mix(in srgb,var(--danger) 30%,transparent);border-left-color:var(--danger);background:linear-gradient(145deg,color-mix(in srgb,var(--danger) 10%,transparent),transparent 60%),var(--card-surface)}
       .row ha-icon{--mdc-icon-size:17px;color:var(--accent);flex:0 0 auto}
       .row.warn ha-icon{color:var(--danger)}
       .row-label{flex:1;font-size:12.5px;color:var(--secondary-text-color)}
