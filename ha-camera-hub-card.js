@@ -1,4 +1,4 @@
-const VERSION = "0.4.0";
+const VERSION = "0.4.1";
 
 const EVENTS_REFRESH_MS = 2 * 60 * 1000;
 const SYSTEM_TICK_MS = 30 * 1000;
@@ -309,6 +309,18 @@ class HACameraHubCard extends HTMLElement {
     return Number.isNaN(direct.getTime()) ? NaN : direct.getTime();
   }
 
+  async _resolvePlayableNode(node, depth = 0) {
+    const children = node?.children || [];
+    if (!children.length || depth >= 4) return node;
+    if (children.some((child) => child.can_play)) return node;
+    const preferred =
+      children.find((child) => /all\s*events?/i.test(child.title)) ||
+      (children.length === 1 ? children[0] : children.find((child) => child.can_expand));
+    if (!preferred) return node;
+    const next = await this._browseMedia(preferred.media_content_id);
+    return this._resolvePlayableNode(next, depth + 1);
+  }
+
   _findClosestMediaChild(children, targetTs, toleranceMs = 6 * 60 * 1000) {
     if (!Number.isFinite(targetTs)) return null;
     let best = null;
@@ -348,10 +360,18 @@ class HACameraHubCard extends HTMLElement {
         }
       }
       targetNode = cameraNode ? await this._browseMedia(cameraNode.media_content_id) : root;
+      let stackTitle = cameraNode ? cam?.name || cameraNode.title : "Hændelser (alle kameraer)";
+      if (cameraNode) {
+        const playable = await this._resolvePlayableNode(targetNode);
+        if (playable !== targetNode) {
+          targetNode = playable;
+          stackTitle += " · Alle hændelser";
+        }
+      }
       this._media = {
         loading: false,
         error: null,
-        stack: [{ title: cameraNode ? cam?.name || cameraNode.title : "Hændelser (alle kameraer)", node: targetNode }],
+        stack: [{ title: stackTitle, node: targetNode }],
         playing: null,
       };
     } catch (error) {
