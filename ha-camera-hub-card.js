@@ -1,4 +1,4 @@
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 
 const EVENTS_REFRESH_MS = 2 * 60 * 1000;
 const SYSTEM_TICK_MS = 30 * 1000;
@@ -126,8 +126,10 @@ class HACameraHubCard extends HTMLElement {
   }
   _navigate(path) {
     if (!path) return;
-    history.pushState(null, "", path);
-    window.dispatchEvent(new CustomEvent("location-changed", { bubbles: true, composed: true }));
+    // Ingress-panelet ("/hassio/ingress/...") er ikke en del af Lovelace-SPA'en,
+    // så en almindelig pushState+location-changed bliver ikke genkendt af
+    // routeren og ender på forsiden. En rigtig navigation virker altid.
+    window.location.assign(path);
   }
   _ago(iso) {
     const ms = Date.now() - new Date(iso).getTime();
@@ -285,13 +287,13 @@ class HACameraHubCard extends HTMLElement {
       .slice(0, 150)
       .map((e) => {
         const info = this._typeInfo(e.type);
-        return `<div class="event-row" data-more="${this._esc(e.cameraEntity)}">
+        return `<div class="event-row" data-nav="${this._esc(this._config.protect_ingress_path)}" title="Åbn i UniFi Protect">
           <div class="event-icon ${info.cls}"><ha-icon icon="${info.icon}"></ha-icon></div>
           <div class="event-main">
             <b>${this._esc(e.cameraName)}</b>
             <span>${this._esc(info.label)} &middot; ${this._time(e.iso)} &middot; ${this._esc(this._ago(e.iso))}</span>
           </div>
-          <button class="event-open" data-nav="${this._esc(this._config.protect_ingress_path)}" title="Åbn i UniFi Protect" onclick="event.stopPropagation()"><ha-icon icon="mdi:open-in-new"></ha-icon></button>
+          <button class="event-open" data-more="${this._esc(e.cameraEntity)}" title="Vis kamera nu" onclick="event.stopPropagation()"><ha-icon icon="mdi:cctv"></ha-icon></button>
         </div>`;
       })
       .join("")}</div>`;
